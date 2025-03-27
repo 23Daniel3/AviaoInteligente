@@ -4,6 +4,10 @@ import java.io.*;
 
 public class Main {
   public static void main(String[] args) {
+    startsPythonVisualizer();
+  }
+
+  public static void startsPythonVisualizer() {
     try {
       // Definir o interpretador Python (usar ambiente virtual se necessário)
       String pythonExecutable = "python"; // Ou "venv/Scripts/python" se estiver usando venv
