@@ -5,7 +5,7 @@ import sys
 from scipy.spatial.transform import Rotation as R  # Para cálculos de rotação
 
 # Caminho do modelo CAD
-modelo_path = "C:/Users/danie/Desktop/Programacao/Avião Inteligente/app/src/main/resources/modelo.obj"
+modelo_path = "C:/Users/danie/Desktop/Programacao/Avião Inteligente/src/main/resources/modelo.obj"
 
 # Verifique se o arquivo existe
 if not os.path.exists(modelo_path):
