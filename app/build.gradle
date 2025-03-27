@@ -9,6 +9,7 @@ plugins {
     // Apply the application plugin to add support for building a CLI application in Java.
     id 'application'
     id 'java'
+    id 'com.diffplug.spotless' version '6.20.0'
 }
 
 repositories {
@@ -53,3 +54,12 @@ tasks.named('test') {
     // Use JUnit Platform for unit tests.
     useJUnitPlatform()
 }
+
+spotless {
+    java {
+        target 'src/**/*.java'  // Formata todos os arquivos Java no diretório src
+        googleJavaFormat()  // Usa o Google Java Format para identação automática
+    }
+}
+
+build.dependsOn 'spotlessApply'
