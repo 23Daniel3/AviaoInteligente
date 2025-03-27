@@ -8,7 +8,7 @@ public class Main {
             // Definir o interpretador Python (usar ambiente virtual se necessário)
             String pythonExecutable = "python";  // Ou "venv/Scripts/python" se estiver usando venv
             String scriptPath = "C:/Users/danie/Desktop/Programacao/Avião Inteligente/app/src/main/resources/visualizer.py";
-
+            
             // Criar o processo para rodar o script Python
             ProcessBuilder pb = new ProcessBuilder(pythonExecutable, scriptPath);
             pb.redirectErrorStream(true);
