@@ -23,28 +23,32 @@ if modelo.n_points == 0:
 
 print("Modelo carregado com sucesso!")
 
+# Calcular o centro do modelo
+centroide = modelo.points.mean(axis=0)
+
 # Criar a visualização
 plotter = pv.Plotter()
 plotter.add_mesh(modelo, color="gray")  # Cor do modelo
 plotter.show(interactive_update=True)  # Inicializa sem bloquear o terminal
 
 def rotacionar_modelo(yaw, pitch, roll):
-    """ Aplica a rotação absoluta ao modelo """
+    """ Aplica a rotação absoluta ao modelo em torno do seu centro """
     global modelo
 
     # Restaurar modelo à posição original antes de aplicar nova rotação
     modelo.points = modelo_original.points.copy()
 
-    # Converter ângulos para radianos
-    yaw_rad = np.radians(yaw)
-    pitch_rad = np.radians(pitch)
-    roll_rad = np.radians(roll)
+    # Deslocar o modelo para que o centro fique na origem
+    modelo.points -= centroide
 
     # Criar matriz de rotação absoluta (ordem Yaw -> Pitch -> Roll)
     rotacao = R.from_euler('zyx', [yaw, pitch, roll], degrees=True).as_matrix()
 
     # Aplicar rotação ao modelo
     modelo.points = modelo.points @ rotacao.T  # Multiplicação da matriz de rotação
+
+    # Retornar o modelo para a posição original
+    modelo.points += centroide
 
     plotter.update()  # Atualizar a renderização
 
