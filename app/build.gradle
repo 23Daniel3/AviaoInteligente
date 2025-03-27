@@ -8,6 +8,7 @@
 plugins {
     // Apply the application plugin to add support for building a CLI application in Java.
     id 'application'
+    id 'com.diffplug.spotless' version '6.20.0'
 }
 
 repositories {
@@ -42,7 +43,11 @@ tasks.named('test') {
     useJUnitPlatform()
 }
 
-tasks.register<Exec>("runPython") {
-    workingDir = file(".")
-    commandLine("venv/Scripts/python", "visualizer.py") // Windows
+spotless {
+    java {
+        target 'src/**/*.java'  // Formata todos os arquivos Java no diretório src
+        googleJavaFormat()  // Usa o Google Java Format para identação automática
+    }
 }
+
+build.dependsOn 'spotlessApply'
