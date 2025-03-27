@@ -1,0 +1,8 @@
+{
+    "java.project.sourcePaths": [
+        "app/src/main/java/aviao/util",
+        "app/src/main/java/aviao",
+        "app/src/main/java"
+    ],
+    "java.compile.nullAnalysis.mode": "automatic"
+}

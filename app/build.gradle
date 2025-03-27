@@ -43,8 +43,3 @@ tasks.named('test') {
     // Use JUnit Platform for unit tests.
     useJUnitPlatform()
 }
-
-tasks.register<Exec>("runPython") {
-    workingDir = file(".")
-    commandLine("venv/Scripts/python", "visualizer.py") // Windows
-}

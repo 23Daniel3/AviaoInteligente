@@ -1,4 +1,4 @@
-package aviao.inteligente;
+package aviao;
 
 import java.io.*;
 
