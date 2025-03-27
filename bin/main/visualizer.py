@@ -28,7 +28,7 @@ centroide = modelo.points.mean(axis=0)
 
 # Criar a visualização
 plotter = pv.Plotter()
-plotter.add_mesh(modelo, color="gray")  # Cor do modelo
+plotter.add_mesh(modelo, color="white")  # Cor do modelo
 plotter.show(interactive_update=True)  # Inicializa sem bloquear o terminal
 
 def rotacionar_modelo(yaw, pitch, roll):
