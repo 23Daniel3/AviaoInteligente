@@ -15,8 +15,7 @@ public class Main {
     try {
       // Definir o interpretador Python (usar ambiente virtual se necessário)
       String pythonExecutable = "python"; // Ou "venv/Scripts/python" se estiver usando venv
-      String scriptPath =
-          "C:/Users/danie/Desktop/Programacao/Avião Inteligente/src/main/resources/visualizer.py";
+      String scriptPath = "resources/visualizer.py";
 
       // Criar o processo para rodar o script Python
       ProcessBuilder pb = new ProcessBuilder(pythonExecutable, scriptPath);
@@ -44,9 +43,9 @@ public class Main {
       // Loop para entrada do usuário
       BufferedReader userInput = new BufferedReader(new InputStreamReader(System.in));
       while (true) {
-        System.out.print("Digite Yaw, Pitch e Roll (ex: 30 15 -10) ou 'exit' para sair: ");
+        System.out.print("Digite Yaw, Pitch e Roll ou 'exit' para sair: ");
         String input = userInput.readLine();
-        if (input.equalsIgnoreCase("exit")) {
+        if (input.equalsIgnoreCase("exit") || input.equalsIgnoreCase("sair") || input.equalsIgnoreCase("sai")) {
           writer.write("exit\n");
           writer.flush();
           break;
