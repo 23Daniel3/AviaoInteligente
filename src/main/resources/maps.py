@@ -6,21 +6,20 @@ import matplotlib.animation as animation
 # Lista para armazenar a trajetória
 trajectory = []
 fig, ax = plt.subplots()
-sc, = ax.plot([], [], 'bo-', markersize=5)
 
 def update_plot():
-    """Atualiza o gráfico com os pontos e a trajetória."""
+    """Atualiza o gráfico com a trajetória, sem os pontos."""
     if len(trajectory) < 2:
         return
     
     ax.clear()
-    ax.set_title("Trajetória do Aeromodelo")
+    ax.set_title("Trajetória")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     ax.grid(True)
     
     lons, lats = zip(*trajectory)
-    ax.plot(lons, lats, 'bo-', markersize=5)
+    ax.plot(lons, lats, 'b-', linewidth=2)  # Linha da trajetória sem pontos
     plt.draw()
 
 def get_coordinates():
