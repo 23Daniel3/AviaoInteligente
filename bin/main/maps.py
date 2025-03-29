@@ -1,60 +1,76 @@
-import folium
 import tkinter as tk
-from io import BytesIO
-from PIL import Image, ImageTk
-import requests
+from tkinter import messagebox
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 # Lista para armazenar a trajetória
 trajectory = []
+fig, ax = plt.subplots()
+sc, = ax.plot([], [], 'bo-', markersize=5)
+
+def update_plot():
+    """Atualiza o gráfico com os pontos e a trajetória."""
+    if len(trajectory) < 2:
+        return
+    
+    ax.clear()
+    ax.set_title("Trajetória do Aeromodelo")
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.grid(True)
+    
+    lons, lats = zip(*trajectory)
+    ax.plot(lons, lats, 'bo-', markersize=5)
+    plt.draw()
+
+def get_coordinates():
+    """Obtém coordenadas do usuário e atualiza o gráfico."""
+    try:
+        latitude = entry_lat.get()
+        longitude = entry_lon.get()
+        
+        if not latitude or not longitude:
+            return
+        
+        lat, lon = float(latitude), float(longitude)
+        
+        # Apenas adiciona se for um novo ponto (evita duplicatas consecutivas)
+        if not trajectory or (lat, lon) != trajectory[-1]:
+            trajectory.append((lat, lon))
+            update_plot()
+    except ValueError:
+        pass
+
+def animate(i):
+    """Função de animação para atualizar o gráfico periodicamente."""
+    update_plot()
 
 # Configuração da interface gráfica
 root = tk.Tk()
-root.title("Visualização de Satélite")
-canvas = tk.Canvas(root, width=600, height=600)
-canvas.pack()
+root.title("Mapa de Satélite com Trajetória - Visualização Gráfica")
 
-def get_satellite_image(lat, lon, zoom=15):
-    """Obtém uma imagem de satélite do serviço ESRI World Imagery."""
-    url = f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{zoom}/{int(lat)}/{int(lon)}"
-    response = requests.get(url, stream=True)
-    if response.status_code == 200:
-        img = Image.open(BytesIO(response.content))
-        return img
-    else:
-        raise Exception("Falha ao obter a imagem de satélite")
+frame = tk.Frame(root)
+frame.pack(pady=20)
 
-def update_map():
-    """Atualiza a exibição do mapa na interface gráfica."""
-    if not trajectory:
-        return
-    
-    lat, lon = trajectory[-1]
-    try:
-        img = get_satellite_image(lat, lon)
-        img = img.resize((600, 600))  # Ajusta o tamanho
-        img_tk = ImageTk.PhotoImage(img)
-        canvas.create_image(300, 300, image=img_tk)
-        canvas.image = img_tk  # Mantém referência para evitar garbage collection
-    except Exception as e:
-        print(f"Erro ao carregar imagem: {e}")
+tk.Label(frame, text="Latitude:").grid(row=0, column=0)
+entry_lat = tk.Entry(frame)
+entry_lat.grid(row=0, column=1)
 
-def show_satellite_view():
-    while True:
-        try:
-            latitude = input("Digite a latitude (ou 'sair' para encerrar): ")
-            if latitude.lower() == 'sair':
-                break
-            longitude = input("Digite a longitude: ")
-            
-            latitude, longitude = float(latitude), float(longitude)
-            trajectory.append((latitude, longitude))
-            update_map()
-        except ValueError:
-            print("Entrada inválida. Certifique-se de inserir números para latitude e longitude.")
-        except Exception as e:
-            print(f"Ocorreu um erro: {e}")
-    
-    root.mainloop()
+tk.Label(frame, text="Longitude:").grid(row=1, column=0)
+entry_lon = tk.Entry(frame)
+entry_lon.grid(row=1, column=1)
 
-if __name__ == "__main__":
-    show_satellite_view()
+btn_add = tk.Button(root, text="Adicionar Ponto", command=get_coordinates)
+btn_add.pack(pady=10)
+
+# Configuração do gráfico
+ax.set_xlim(-180, 180)
+ax.set_ylim(-90, 90)
+ax.set_title("Trajetória do Aeromodelo")
+ax.set_xlabel("Longitude")
+ax.set_ylabel("Latitude")
+ax.grid(True)
+ani = animation.FuncAnimation(fig, animate, interval=500)
+
+plt.show()
+root.mainloop()
