@@ -5,10 +5,10 @@ import java.io.*;
 public class Main {
   public static void main(String[] args) {
     // Inicia o script Python utilizando threads
-    Thread pythonMapsThread = new Thread(Main::startsPythonMaps);
+    Thread pythonThread = new Thread(Main::startsPythonMaps);
 
     // Inicia as threads
-    pythonMapsThread.start();
+    pythonThread.start();
   }
 
   public static void startsPythonVisualizer() {
