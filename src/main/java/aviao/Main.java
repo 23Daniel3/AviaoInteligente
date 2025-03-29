@@ -6,11 +6,11 @@ public class Main {
   public static void main(String[] args) {
     // Inicia ambos os scripts Python em paralelo utilizando threads
     Thread pythonMapsThread = new Thread(Main::startsPythonMaps);
-    Thread pythonVisualizerThread = new Thread(Main::startsPythonVisualizer);
+    //Thread pythonVisualizerThread = new Thread(Main::startsPythonVisualizer);
 
     // Inicia as threads
     pythonMapsThread.start();
-    pythonVisualizerThread.start();
+    //pythonVisualizerThread.start();
   }
 
   public static void startsPythonVisualizer() {
@@ -73,7 +73,7 @@ public class Main {
       // Definir o interpretador Python (usar ambiente virtual se necessário)
       String pythonExecutable = "python"; // Ou "venv/Scripts/python" se estiver usando venv
       String scriptPath =
-          "C:/Users/danie/Desktop/Programacao/Avião Inteligente/src/main/resources/maps.py";  // Caminho do seu script maps.py
+          "C:/Users/danie/Desktop/Programacao/Avião Inteligente/src/main/resources/dashboard.py";
 
       // Criar o processo para rodar o script Python
       ProcessBuilder pb = new ProcessBuilder(pythonExecutable, scriptPath);
@@ -82,7 +82,9 @@ public class Main {
 
       // Criar os fluxos de comunicação com o processo Python
       BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-      BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()));
+      
+      //Usado para passar os dados para o terminal
+      //BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()));
 
       // Thread para ler a saída do Python e exibi-la no console Java
       new Thread(
@@ -100,7 +102,7 @@ public class Main {
 
       // Aguardar o término do processo Python
       process.waitFor();
-      System.out.println("Python Maps finalizado.");
+      System.out.println("Dashboard finalizada.");
 
     } catch (Exception e) {
       e.printStackTrace();
