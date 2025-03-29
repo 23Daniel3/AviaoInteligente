@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.animation as animation
 from pyvistaqt import BackgroundPlotter
+import webbrowser  # Para abrir o Google Maps
 
 # Caminho do modelo CAD
 modelo_path = "C:/Users/danie/Desktop/Programacao/Avião Inteligente/src/main/resources/modelo.obj"
@@ -120,6 +121,16 @@ btn_add.pack(pady=5)
 
 canvas = FigureCanvasTkAgg(fig, master=frame_grafico)
 canvas.get_tk_widget().pack()
+
+def abrir_no_google_maps():
+    """ Abre o ponto mais recente no Google Maps. """
+    if trajectory:
+        lat, lon = trajectory[-1]  # Pega o ponto mais recente
+        url = f"https://www.google.com/maps?q={lat},{lon}"
+        webbrowser.open(url)  # Abre o Google Maps
+
+btn_abrir_maps = tk.Button(frame_grafico, text="Abrir no Google Maps", command=abrir_no_google_maps)
+btn_abrir_maps.pack(pady=5)
 
 # Loop principal do Tkinter
 root.mainloop()
