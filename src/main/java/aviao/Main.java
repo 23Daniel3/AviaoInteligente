@@ -4,7 +4,13 @@ import java.io.*;
 
 public class Main {
   public static void main(String[] args) {
-    startsPythonVisualizer();
+    // Inicia ambos os scripts Python em paralelo utilizando threads
+    Thread pythonMapsThread = new Thread(Main::startsPythonMaps);
+    Thread pythonVisualizerThread = new Thread(Main::startsPythonVisualizer);
+
+    // Inicia as threads
+    pythonMapsThread.start();
+    pythonVisualizerThread.start();
   }
 
   public static void startsPythonVisualizer() {
@@ -55,7 +61,46 @@ public class Main {
 
       // Aguardar o término do processo Python
       process.waitFor();
-      System.out.println("Python finalizado.");
+      System.out.println("Python Visualizer finalizado.");
+
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
+  }
+
+  public static void startsPythonMaps() {
+    try {
+      // Definir o interpretador Python (usar ambiente virtual se necessário)
+      String pythonExecutable = "python"; // Ou "venv/Scripts/python" se estiver usando venv
+      String scriptPath =
+          "C:/Users/danie/Desktop/Programacao/Avião Inteligente/src/main/resources/maps.py";  // Caminho do seu script maps.py
+
+      // Criar o processo para rodar o script Python
+      ProcessBuilder pb = new ProcessBuilder(pythonExecutable, scriptPath);
+      pb.redirectErrorStream(true);
+      Process process = pb.start();
+
+      // Criar os fluxos de comunicação com o processo Python
+      BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+      BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()));
+
+      // Thread para ler a saída do Python e exibi-la no console Java
+      new Thread(
+              () -> {
+                String line;
+                try {
+                  while ((line = reader.readLine()) != null) {
+                    System.out.println(line);
+                  }
+                } catch (IOException e) {
+                  e.printStackTrace();
+                }
+              })
+          .start();
+
+      // Aguardar o término do processo Python
+      process.waitFor();
+      System.out.println("Python Maps finalizado.");
 
     } catch (Exception e) {
       e.printStackTrace();

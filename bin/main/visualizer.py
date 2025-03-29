@@ -55,8 +55,8 @@ def rotacionar_modelo(yaw, pitch, roll):
 # Loop para receber os valores de Yaw, Pitch e Roll do Java
 while True:
     try:
-        entrada = input("Digite Yaw, Pitch e Roll (ex: 30 15 -10) ou 'exit' para sair: ").strip()
-        if entrada.lower() == "exit":
+        entrada = input("Digite Yaw, Pitch e Roll ou 'exit' para sair: ").strip()
+        if entrada.lower() == "exit" or entrada.lower() == "sair" or entrada.lower() == "sai":
             break
 
         yaw, pitch, roll = map(float, entrada.split())
