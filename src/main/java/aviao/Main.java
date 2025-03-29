@@ -4,13 +4,11 @@ import java.io.*;
 
 public class Main {
   public static void main(String[] args) {
-    // Inicia ambos os scripts Python em paralelo utilizando threads
+    // Inicia o script Python utilizando threads
     Thread pythonMapsThread = new Thread(Main::startsPythonMaps);
-    //Thread pythonVisualizerThread = new Thread(Main::startsPythonVisualizer);
 
     // Inicia as threads
     pythonMapsThread.start();
-    //pythonVisualizerThread.start();
   }
 
   public static void startsPythonVisualizer() {
