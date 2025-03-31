@@ -129,6 +129,15 @@ def abrir_no_google_maps():
         url = f"https://www.google.com/maps?q={lat},{lon}"
         webbrowser.open(url)  # Abre o Google Maps
 
+def salvar_trajetoria():
+    """Salva a imagem do gráfico da trajetória."""
+    file_path = "trajetoria.png"
+    fig.savefig(file_path)
+    print(f"Trajetória salva como {file_path}")
+
+btn_salvar = tk.Button(frame_grafico, text="Salvar Trajetória", command=salvar_trajetoria)
+btn_salvar.pack(pady=5)
+
 btn_abrir_maps = tk.Button(frame_grafico, text="Abrir no Google Maps", command=abrir_no_google_maps)
 btn_abrir_maps.pack(pady=5)
 
