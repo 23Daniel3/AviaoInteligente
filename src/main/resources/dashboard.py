@@ -125,13 +125,7 @@ class MainWindow(QMainWindow):
         modelo.points = modelo_original.points.copy() - centroide
         rot = R.from_euler('zyx', [yaw, pitch, roll], degrees=True).as_matrix()
         modelo.points = modelo.points @ rot.T + centroide
-
-        # Atualiza a malha sem perder propriedades visuais
-        #self.plotter.clear()  # Limpa apenas o modelo anterior
-        #self.plotter.add_mesh(modelo, color="white", smooth_shading=True)  # Mantém a cor e sombreamento
-        #self.plotter.reset_camera()
-        self.plotter.update()  # Garante que a atualização seja renderizada corretamente
-
+        self.plotter.update()
 
     def add_point(self):
         try:
