@@ -5,6 +5,8 @@ import pyvista as pv
 from scipy.spatial.transform import Rotation as R
 import webbrowser
 import matplotlib
+import time
+from PyQt5.QtCore import QTimer
 matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
 
@@ -33,6 +35,10 @@ class MainWindow(QMainWindow):
         self.resize(1600, 900)
 
         self.trajectory = []
+        self.animating = False
+        self.animation_timer = QTimer()
+        self.animation_timer.timeout.connect(self.animate_rotation)
+        self.animation_step = 0
 
         central_widget = QWidget()
         main_layout = QHBoxLayout(central_widget)
@@ -75,6 +81,9 @@ class MainWindow(QMainWindow):
         btn_rotacao = QPushButton("Aplicar Rotacao")
         btn_rotacao.clicked.connect(self.aplicar_rotacao)
 
+        btn_animate = QPushButton("Animação")
+        btn_animate.clicked.connect(self.toggle_animation)
+
         rot_layout.addWidget(lbl_yaw, 0, 0)
         rot_layout.addWidget(self.spin_yaw, 0, 1)
         rot_layout.addWidget(lbl_pitch, 1, 0)
@@ -82,6 +91,7 @@ class MainWindow(QMainWindow):
         rot_layout.addWidget(lbl_roll, 2, 0)
         rot_layout.addWidget(self.spin_roll, 2, 1)
         rot_layout.addWidget(btn_rotacao, 3, 0, 1, 2)
+        rot_layout.addWidget(btn_animate, 4, 0, 1, 2)
 
         # Painel direito
         right_panel = QWidget()
@@ -157,6 +167,19 @@ class MainWindow(QMainWindow):
     def salvar_trajetoria(self):
         self.fig.savefig("trajetoria.png")
         QMessageBox.information(self, "Salvo", "Trajetória salva com sucesso!")
+
+    def toggle_animation(self):
+        if self.animating:
+            self.animation_timer.stop()
+        else:
+            self.animation_timer.start(100)
+        self.animating = not self.animating
+
+    def animate_rotation(self):
+        self.animation_step += 5
+        self.spin_yaw.setValue(np.sin(np.radians(self.animation_step)) * 45)
+        self.spin_pitch.setValue(np.cos(np.radians(self.animation_step)) * 30)
+        self.aplicar_rotacao()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
