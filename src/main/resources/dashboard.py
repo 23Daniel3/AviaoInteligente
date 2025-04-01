@@ -3,143 +3,169 @@ import sys
 import numpy as np
 import pyvista as pv
 from scipy.spatial.transform import Rotation as R
-import tkinter as tk
-from tkinter import ttk
+import webbrowser
+import matplotlib
+matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.animation as animation
-from pyvistaqt import BackgroundPlotter
-import webbrowser  # Para abrir o Google Maps
+
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QLabel, QDoubleSpinBox, QLineEdit, QPushButton, QMessageBox, QSizePolicy
+)
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from pyvistaqt import QtInteractor
 
 # Caminho do modelo CAD
 modelo_path = "C:/Users/danie/Desktop/Programacao/Avião Inteligente/src/main/resources/modelo.obj"
-
-# Verifica se o arquivo existe
 if not os.path.exists(modelo_path):
     print(f"Erro: Arquivo {modelo_path} não encontrado!")
     sys.exit(1)
 
-# Carregar o modelo
+# Carregar modelo CAD
 modelo_original = pv.read(modelo_path)
 modelo = modelo_original.copy()
-
-# Calcular centro do modelo
 centroide = modelo.points.mean(axis=0)
 
-# Criar visualizador PyVista
-plotter = BackgroundPlotter()
-plotter.add_mesh(modelo, color="white")
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Dashboard de Monitoramento")
+        self.resize(1600, 900)
 
-def rotacionar_modelo(yaw, pitch, roll):
-    """ Aplica a rotação ao modelo. """
-    global modelo
+        self.trajectory = []
 
-    modelo.points = modelo_original.points.copy()
-    modelo.points -= centroide
+        central_widget = QWidget()
+        main_layout = QHBoxLayout(central_widget)
+        self.setCentralWidget(central_widget)
 
-    # Aplicar rotação
-    rotacao = R.from_euler('zyx', [yaw, pitch, roll], degrees=True).as_matrix()
-    modelo.points = modelo.points @ rotacao.T
+        # Painel esquerdo
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        main_layout.addWidget(left_panel, 3)
 
-    modelo.points += centroide
-    plotter.update()
+        # Visualizador 3D
+        self.plotter = QtInteractor(self)
+        self.plotter.add_mesh(modelo, color="white")
+        self.plotter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        left_layout.addWidget(self.plotter, 5)
 
-# Criar interface gráfica (Tkinter)
-root = tk.Tk()
-root.title("Dashboard de Monitoramento")
+        # Controles de rotação
+        rot_group = QWidget()
+        rot_layout = QGridLayout(rot_group)
+        left_layout.addWidget(rot_group, 1)
 
-# Criar frames para CAD e gráfico
-frame_cad = tk.Frame(root)
-frame_cad.pack(side=tk.LEFT, padx=10, pady=10)
+        lbl_yaw = QLabel("Yaw:")
+        self.spin_yaw = QDoubleSpinBox()
+        self.spin_yaw.setRange(-180, 180)
+        self.spin_yaw.setDecimals(2)
+        self.spin_yaw.setValue(0)
 
-frame_grafico = tk.Frame(root)
-frame_grafico.pack(side=tk.RIGHT, padx=10, pady=10)
+        lbl_pitch = QLabel("Pitch:")
+        self.spin_pitch = QDoubleSpinBox()
+        self.spin_pitch.setRange(-180, 180)
+        self.spin_pitch.setDecimals(2)
+        self.spin_pitch.setValue(0)
 
-# Entrada para rotação
-tk.Label(frame_cad, text="Yaw:").pack()
-entry_yaw = tk.Entry(frame_cad)
-entry_yaw.pack()
+        lbl_roll = QLabel("Roll:")
+        self.spin_roll = QDoubleSpinBox()
+        self.spin_roll.setRange(-180, 180)
+        self.spin_roll.setDecimals(2)
+        self.spin_roll.setValue(0)
 
-tk.Label(frame_cad, text="Pitch:").pack()
-entry_pitch = tk.Entry(frame_cad)
-entry_pitch.pack()
+        btn_rotacao = QPushButton("Aplicar Rotacao")
+        btn_rotacao.clicked.connect(self.aplicar_rotacao)
 
-tk.Label(frame_cad, text="Roll:").pack()
-entry_roll = tk.Entry(frame_cad)
-entry_roll.pack()
+        rot_layout.addWidget(lbl_yaw, 0, 0)
+        rot_layout.addWidget(self.spin_yaw, 0, 1)
+        rot_layout.addWidget(lbl_pitch, 1, 0)
+        rot_layout.addWidget(self.spin_pitch, 1, 1)
+        rot_layout.addWidget(lbl_roll, 2, 0)
+        rot_layout.addWidget(self.spin_roll, 2, 1)
+        rot_layout.addWidget(btn_rotacao, 3, 0, 1, 2)
 
-def aplicar_rotacao():
-    """ Obtém valores e aplica rotação ao modelo. """
-    try:
-        yaw = float(entry_yaw.get())
-        pitch = float(entry_pitch.get())
-        roll = float(entry_roll.get())
-        rotacionar_modelo(yaw, pitch, roll)
-    except ValueError:
-        pass
+        # Painel direito
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        main_layout.addWidget(right_panel, 1)
 
-btn_rotacao = tk.Button(frame_cad, text="Aplicar Rotação", command=aplicar_rotacao)
-btn_rotacao.pack(pady=5)
+        self.fig, self.ax = plt.subplots(figsize=(5, 4))
+        self.ax.set_title("Trajetória do Aeromodelo")
+        self.ax.set_xlabel("Longitude")
+        self.ax.set_ylabel("Latitude")
+        self.ax.grid(True)
+        self.canvas = FigureCanvas(self.fig)
+        right_layout.addWidget(self.canvas, 4)
 
-# Criar gráfico de trajetória
-fig, ax = plt.subplots(figsize=(5, 4))
-trajectory = []
+        traj_controls = QWidget()
+        traj_layout = QGridLayout(traj_controls)
+        right_layout.addWidget(traj_controls, 1)
 
-def update_plot():
-    """ Atualiza o gráfico da trajetória. """
-    ax.clear()
-    ax.set_title("Trajetória do Aeromodelo")
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.grid(True)
-    if trajectory:
-        lons, lats = zip(*trajectory)
-        ax.plot(lons, lats, 'b-', linewidth=2)
-    canvas.draw()
+        lbl_lat = QLabel("Latitude:")
+        self.edit_lat = QLineEdit()
+        lbl_lon = QLabel("Longitude:")
+        self.edit_lon = QLineEdit()
 
-def add_point():
-    """ Adiciona novo ponto à trajetória. """
-    try:
-        lat = float(entry_lat.get())
-        lon = float(entry_lon.get())
-        if not trajectory or (lat, lon) != trajectory[-1]:
-            trajectory.append((lat, lon))
-            update_plot()
-    except ValueError:
-        pass
+        btn_add = QPushButton("Adicionar Ponto")
+        btn_add.clicked.connect(self.add_point)
+        btn_abrir_maps = QPushButton("Abrir no Google Maps")
+        btn_abrir_maps.clicked.connect(self.abrir_no_google_maps)
+        btn_salvar = QPushButton("Salvar Trajetória")
+        btn_salvar.clicked.connect(self.salvar_trajetoria)
 
-tk.Label(frame_grafico, text="Latitude:").pack()
-entry_lat = tk.Entry(frame_grafico)
-entry_lat.pack()
+        traj_layout.addWidget(lbl_lat, 0, 0)
+        traj_layout.addWidget(self.edit_lat, 0, 1)
+        traj_layout.addWidget(lbl_lon, 1, 0)
+        traj_layout.addWidget(self.edit_lon, 1, 1)
+        traj_layout.addWidget(btn_add, 2, 0, 1, 2)
+        traj_layout.addWidget(btn_abrir_maps, 3, 0, 1, 2)
+        traj_layout.addWidget(btn_salvar, 4, 0, 1, 2)
 
-tk.Label(frame_grafico, text="Longitude:").pack()
-entry_lon = tk.Entry(frame_grafico)
-entry_lon.pack()
+    def aplicar_rotacao(self):
+        yaw, pitch, roll = self.spin_yaw.value(), self.spin_pitch.value(), self.spin_roll.value()
+        modelo.points = modelo_original.points.copy() - centroide
+        rot = R.from_euler('zyx', [yaw, pitch, roll], degrees=True).as_matrix()
+        modelo.points = modelo.points @ rot.T + centroide
 
-btn_add = tk.Button(frame_grafico, text="Adicionar Ponto", command=add_point)
-btn_add.pack(pady=5)
+        # Atualiza a malha sem perder propriedades visuais
+        #self.plotter.clear()  # Limpa apenas o modelo anterior
+        #self.plotter.add_mesh(modelo, color="white", smooth_shading=True)  # Mantém a cor e sombreamento
+        #self.plotter.reset_camera()
+        self.plotter.update()  # Garante que a atualização seja renderizada corretamente
 
-canvas = FigureCanvasTkAgg(fig, master=frame_grafico)
-canvas.get_tk_widget().pack()
 
-def abrir_no_google_maps():
-    """ Abre o ponto mais recente no Google Maps. """
-    if trajectory:
-        lat, lon = trajectory[-1]  # Pega o ponto mais recente
-        url = f"https://www.google.com/maps?q={lat},{lon}"
-        webbrowser.open(url)  # Abre o Google Maps
+    def add_point(self):
+        try:
+            lat, lon = float(self.edit_lat.text()), float(self.edit_lon.text())
+        except ValueError:
+            QMessageBox.warning(self, "Erro", "Valores inválidos!")
+            return
+        
+        if not self.trajectory or (lat, lon) != self.trajectory[-1]:
+            self.trajectory.append((lat, lon))
+            self.update_plot()
 
-def salvar_trajetoria():
-    """Salva a imagem do gráfico da trajetória."""
-    file_path = "trajetoria.png"
-    fig.savefig(file_path)
-    print(f"Trajetória salva como {file_path}")
+    def update_plot(self):
+        self.ax.clear()
+        self.ax.set_title("Trajetória do Aeromodelo")
+        self.ax.set_xlabel("Longitude")
+        self.ax.set_ylabel("Latitude")
+        self.ax.grid(True)
+        if self.trajectory:
+            lons, lats = zip(*self.trajectory)
+            self.ax.plot(lons, lats, 'b-', linewidth=2)
+        self.canvas.draw()
 
-btn_salvar = tk.Button(frame_grafico, text="Salvar Trajetória", command=salvar_trajetoria)
-btn_salvar.pack(pady=5)
+    def abrir_no_google_maps(self):
+        if self.trajectory:
+            lat, lon = self.trajectory[-1]
+            webbrowser.open(f"https://www.google.com/maps?q={lat},{lon}")
 
-btn_abrir_maps = tk.Button(frame_grafico, text="Abrir no Google Maps", command=abrir_no_google_maps)
-btn_abrir_maps.pack(pady=5)
+    def salvar_trajetoria(self):
+        self.fig.savefig("trajetoria.png")
+        QMessageBox.information(self, "Salvo", "Trajetória salva com sucesso!")
 
-# Loop principal do Tkinter
-root.mainloop()
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
