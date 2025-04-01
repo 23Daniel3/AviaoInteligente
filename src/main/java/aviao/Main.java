@@ -45,7 +45,9 @@ public class Main {
       while (true) {
         System.out.print("Digite Yaw, Pitch e Roll ou 'exit' para sair: ");
         String input = userInput.readLine();
-        if (input.equalsIgnoreCase("exit") || input.equalsIgnoreCase("sair") || input.equalsIgnoreCase("sai")) {
+        if (input.equalsIgnoreCase("exit")
+            || input.equalsIgnoreCase("sair")
+            || input.equalsIgnoreCase("sai")) {
           writer.write("exit\n");
           writer.flush();
           break;
@@ -79,9 +81,10 @@ public class Main {
 
       // Criar os fluxos de comunicação com o processo Python
       BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-      
-      //Usado para passar os dados para o terminal
-      //BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()));
+
+      // Usado para passar os dados para o terminal
+      // BufferedWriter writer = new BufferedWriter(new
+      // OutputStreamWriter(process.getOutputStream()));
 
       // Thread para ler a saída do Python e exibi-la no console Java
       new Thread(
