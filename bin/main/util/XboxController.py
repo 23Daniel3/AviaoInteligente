@@ -106,13 +106,13 @@ class XboxController:
         self.joystick.quit()
         pygame.quit()
 
-# Exemplo de uso:
-if __name__ == "__main__":
-    try:
-        controller = XboxController()
-        print("Controle conectado!")
-        while True:
-            inputs = (f"POVDown: {controller.getLeftStick()}, POVUp: {controller.getRightStick()}, POVLeft: {controller.getX()}, POVRight: {controller.getY()}")
-            print(inputs)
-    except Exception as e:
-        print(e)
+# # Exemplo de uso:
+# if __name__ == "__main__":
+#     try:
+#         controller = XboxController()
+#         print("Controle conectado!")
+#         while True:
+#             inputs = (f"POVDown: {controller.getLeftStick()}, POVUp: {controller.getRightStick()}, POVLeft: {controller.getX()}, POVRight: {controller.getY()}")
+#             print(inputs)
+#     except Exception as e:
+#         print(e)
