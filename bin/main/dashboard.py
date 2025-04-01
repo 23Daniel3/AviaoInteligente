@@ -16,7 +16,6 @@ from PyQt5.QtWidgets import (
 )
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from pyvistaqt import QtInteractor
-from resources.util import XboxController
 
 # Caminho do modelo CAD
 modelo_path = "C:/Users/danie/Desktop/Programacao/Avião Inteligente/src/main/resources/modelo.obj"
