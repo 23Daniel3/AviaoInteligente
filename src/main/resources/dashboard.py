@@ -80,9 +80,6 @@ class Dashboard(QMainWindow):
         btn_animate = QPushButton("Iniciar Animação")
         btn_animate.clicked.connect(self.toggle_animation)
 
-        btn_reset = QPushButton("Resetar Modelo")
-        btn_reset.clicked.connect(self.reset_modelo)
-
         rot_layout.addWidget(lbl_yaw, 0, 0)
         rot_layout.addWidget(self.spin_yaw, 0, 1)
         rot_layout.addWidget(lbl_pitch, 1, 0)
@@ -91,7 +88,6 @@ class Dashboard(QMainWindow):
         rot_layout.addWidget(self.spin_roll, 2, 1)
         rot_layout.addWidget(btn_rotacao, 3, 0, 1, 2)
         rot_layout.addWidget(btn_animate, 4, 0, 1, 2)
-        rot_layout.addWidget(btn_reset, 5, 0, 1, 2)
 
         # Painel direito
         right_panel = QWidget()

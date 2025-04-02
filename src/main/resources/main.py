@@ -20,6 +20,6 @@ if __name__ == "__main__":
 
     timer = QTimer()
     timer.timeout.connect(update_rotation)
-    timer.start(50)  # Atualiza a cada 100ms
+    timer.start(50)
 
     sys.exit(app.exec_())
