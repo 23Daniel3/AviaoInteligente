@@ -96,15 +96,55 @@ class XboxController:
         pygame.event.pump()
         return round(self.joystick.get_axis(2), 2)
     
-    def getRightY(self):
-        """Retorna o valor do eixo Y do joystick direito (invertido para alinhamento correto)."""
+    def getRightTrigger(self):
+        """Retorna o valor do trigger right."""
         pygame.event.pump()
-        return round(-self.joystick.get_axis(3), 2)
+        return round(self.joystick.get_axis(5), 2)
+        
+    def getLeftTrigger(self):
+        """Retorna o valor do trigger left."""
+        pygame.event.pump()
+        return round(self.joystick.get_axis(4), 2)
     
     def close(self):
         """Fecha a conexão com o controle."""
         self.joystick.quit()
         pygame.quit()
+    
+    def get_right_trigger_locked(self):
+        """
+        Retorna o valor do Right Trigger normalmente, mas se o LB for pressionado,
+        ele mantém o valor do Right Trigger no momento da pressão do LB.
+        """
+        pygame.event.pump()
+        right_trigger = self.getRightTrigger()  # Assumindo que o eixo 5 é o RT
+        lb_pressed = self.getLeftBumper()
+
+        if lb_pressed:
+            if not hasattr(self, '_rt_locked_value'):
+                self._rt_locked_value = right_trigger
+            return self._rt_locked_value
+        
+        self._rt_locked_value = right_trigger  # Atualiza quando LB não está pressionado
+        return right_trigger
+    
+    def get_left_trigger_locked(self):
+        """
+        Retorna o valor do Left Trigger normalmente, mas se o RB for pressionado,
+        ele mantém o valor do Left Trigger no momento da pressão do RB.
+        """
+        pygame.event.pump()
+        right_trigger = self.getLeftTrigger()  # Assumindo que o eixo 5 é o RT
+        lb_pressed = self.getRightBumper()
+
+        if lb_pressed:
+            if not hasattr(self, '_rt_locked_value'):
+                self._rt_locked_value = right_trigger
+            return self._rt_locked_value
+        
+        self._rt_locked_value = right_trigger  # Atualiza quando LB não está pressionado
+        return right_trigger
+
 
 # # Exemplo de uso:
 # if __name__ == "__main__":
@@ -112,7 +152,8 @@ class XboxController:
 #         controller = XboxController()
 #         print("Controle conectado!")
 #         while True:
-#             inputs = (f"POVDown: {controller.getLeftStick()}, POVUp: {controller.getRightStick()}, POVLeft: {controller.getX()}, POVRight: {controller.getY()}")
+#             #inputs = (f"POVDown: {controller.getLeftStick()}, POVUp: {controller.getRightStick()}, POVLeft: {controller.getX()}, POVRight: {controller.getY()}")
+#             inputs = (controller.get_left_trigger_locked())
 #             print(inputs)
 #     except Exception as e:
 #         print(e)

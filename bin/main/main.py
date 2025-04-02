@@ -14,8 +14,8 @@ if __name__ == "__main__":
 
     # Criando um timer para atualizar a rotação continuamente sem bloquear a interface
     def update_rotation():
-        pitch = -controller.getRightY()*30  # Ajuste conforme necessário
-        roll = -controller.getRightX()*20
+        pitch = -controller.getRightY()*90  # Ajuste conforme necessário
+        roll = -controller.getRightX()*90
         window.set_rotation(0, pitch, roll)
 
     timer = QTimer()
