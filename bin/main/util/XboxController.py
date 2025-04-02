@@ -97,14 +97,14 @@ class XboxController:
         return round(self.joystick.get_axis(2), 2)
     
     def getRightTrigger(self):
-        """Retorna o valor do trigger right."""
         pygame.event.pump()
-        return round(self.joystick.get_axis(5), 2)
+        raw_value = self.joystick.get_axis(5)
+        return round((raw_value + 1) / 2, 2)
         
     def getLeftTrigger(self):
-        """Retorna o valor do trigger left."""
         pygame.event.pump()
-        return round(self.joystick.get_axis(4), 2)
+        raw_value = self.joystick.get_axis(4)
+        return round((raw_value + 1) / 2, 2)
     
     def close(self):
         """Fecha a conexão com o controle."""
@@ -153,7 +153,7 @@ class XboxController:
 #         print("Controle conectado!")
 #         while True:
 #             #inputs = (f"POVDown: {controller.getLeftStick()}, POVUp: {controller.getRightStick()}, POVLeft: {controller.getX()}, POVRight: {controller.getY()}")
-#             inputs = (controller.get_left_trigger_locked())
+#             inputs = (controller.get_right_trigger_locked())
 #             print(inputs)
 #     except Exception as e:
 #         print(e)
