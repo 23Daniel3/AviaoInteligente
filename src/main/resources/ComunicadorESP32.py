@@ -1,32 +1,58 @@
 import websocket
 import pygame
-from util.XboxController import XboxController  # Certifique-se de que o arquivo XboxController.py está na pasta "útil"
+from util.XboxController import XboxController  # Certifique-se de que o arquivo XboxController.py está na pasta "util"
 
-esp_ip = "192.168.4.1"  # IP do ESP32 na rede criada
+class XboxWebSocketClient:
+    def __init__(self, esp_ip="192.168.4.1"):
+        self.esp_ip = esp_ip
+        self.ws = None
+        self.controller = XboxController()
 
-# Função para enviar comandos ao ESP32
-def enviar_comando(comando):
-    ws = websocket.create_connection(f"ws://{esp_ip}:81")
-    ws.send(comando)
-    ws.close()
+    def conectar(self):
+        try:
+            self.ws = websocket.create_connection(f"ws://{self.esp_ip}:81")
+        except Exception as e:
+            print(f"Erro ao conectar ao WebSocket: {e}")
+            self.ws = None
 
-# Inicialize o controle Xbox
-controller = XboxController()
+    def enviar_comando(self, comando):
+        if self.ws:
+            try:
+                self.ws.send(comando)
+            except Exception as e:
+                print(f"Erro ao enviar comando: {e}")
+        else:
+            print("WebSocket não conectado. Tentando reconectar...")
+            self.conectar()
+            if self.ws:
+                self.enviar_comando(comando)
 
-try:
-    while True:
-        # Verificar os botões pressionados
-        if controller.getA():  # Botão A pressionado
+    def verificar_botoes(self):
+        if self.controller.getA():  # Botão A pressionado
             print("Botão A pressionado - Acendendo LED")
-            enviar_comando("acender")
+            self.enviar_comando("acender")
         
-        if controller.getB():  # Botão B pressionado
+        if self.controller.getB():  # Botão B pressionado
             print("Botão B pressionado - Apagando LED")
-            enviar_comando("apagar")
-        
-        pygame.time.wait(100)  # Pequeno delay para não sobrecarregar a CPU
+            self.enviar_comando("apagar")
 
-except KeyboardInterrupt:
-    print("Fechando o programa.")
-finally:
-    controller.close()  # Fechar o controlador quando terminar
+    def iniciar_loop(self):
+        try:
+            while True:
+                self.verificar_botoes()
+                pygame.time.wait(100)  # Pequeno delay para não sobrecarregar a CPU
+        except KeyboardInterrupt:
+            print("Fechando o programa.")
+        finally:
+            self.fechar()
+
+    def fechar(self):
+        if self.ws:
+            self.ws.close()
+        self.controller.close()
+
+# Exemplo de uso:
+if __name__ == "__main__":
+    client = XboxWebSocketClient()
+    client.conectar()
+    client.iniciar_loop()
