@@ -17,22 +17,18 @@ from PyQt5.QtWidgets import (
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from pyvistaqt import QtInteractor
 
-# Caminho do modelo CAD
-modelo_path = "C:/Users/danie/Desktop/Programacao/Avião Inteligente/src/main/resources/modelo.obj"
-if not os.path.exists(modelo_path):
-    print(f"Erro: Arquivo {modelo_path} não encontrado!")
-    sys.exit(1)
-
-# Carregar modelo CAD
-modelo_original = pv.read(modelo_path)
-modelo = modelo_original.copy()
-centroide = modelo.points.mean(axis=0)
-
-class MainWindow(QMainWindow):
-    def __init__(self):
+class Dashboard(QMainWindow):
+    def __init__(self, modelo_path):
         super().__init__()
         self.setWindowTitle("Dashboard de Monitoramento")
         self.resize(1600, 900)
+
+        if not os.path.exists(modelo_path):
+            raise FileNotFoundError(f"Erro: Arquivo {modelo_path} não encontrado!")
+
+        self.modelo_original = pv.read(modelo_path)
+        self.modelo = self.modelo_original.copy()
+        self.centroide = self.modelo.points.mean(axis=0)
 
         self.trajectory = []
         self.animating = False
@@ -51,7 +47,7 @@ class MainWindow(QMainWindow):
 
         # Visualizador 3D
         self.plotter = QtInteractor(self)
-        self.plotter.add_mesh(modelo, color="white")
+        self.plotter.add_mesh(self.modelo, color="white")
         self.plotter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout.addWidget(self.plotter, 5)
 
@@ -78,11 +74,14 @@ class MainWindow(QMainWindow):
         self.spin_roll.setDecimals(2)
         self.spin_roll.setValue(0)
 
-        btn_rotacao = QPushButton("Aplicar Rotacao")
+        btn_rotacao = QPushButton("Aplicar Rotação")
         btn_rotacao.clicked.connect(self.aplicar_rotacao)
 
-        btn_animate = QPushButton("Animação")
+        btn_animate = QPushButton("Iniciar Animação")
         btn_animate.clicked.connect(self.toggle_animation)
+
+        btn_reset = QPushButton("Resetar Modelo")
+        btn_reset.clicked.connect(self.reset_modelo)
 
         rot_layout.addWidget(lbl_yaw, 0, 0)
         rot_layout.addWidget(self.spin_yaw, 0, 1)
@@ -92,6 +91,7 @@ class MainWindow(QMainWindow):
         rot_layout.addWidget(self.spin_roll, 2, 1)
         rot_layout.addWidget(btn_rotacao, 3, 0, 1, 2)
         rot_layout.addWidget(btn_animate, 4, 0, 1, 2)
+        rot_layout.addWidget(btn_reset, 5, 0, 1, 2)
 
         # Painel direito
         right_panel = QWidget()
@@ -132,41 +132,19 @@ class MainWindow(QMainWindow):
 
     def aplicar_rotacao(self):
         yaw, pitch, roll = self.spin_yaw.value(), self.spin_pitch.value(), self.spin_roll.value()
-        modelo.points = modelo_original.points.copy() - centroide
+        self.set_rotation(yaw, pitch, roll)
+
+    def set_rotation(self, yaw, pitch, roll):
+        self.modelo.points = self.modelo_original.points.copy() - self.centroide
         rot = R.from_euler('zyx', [yaw, pitch, roll], degrees=True).as_matrix()
-        modelo.points = modelo.points @ rot.T + centroide
+        self.modelo.points = self.modelo.points @ rot.T + self.centroide
         self.plotter.update()
 
-    def add_point(self):
-        try:
-            lat, lon = float(self.edit_lat.text()), float(self.edit_lon.text())
-        except ValueError:
-            QMessageBox.warning(self, "Erro", "Valores inválidos!")
-            return
-        
-        if not self.trajectory or (lat, lon) != self.trajectory[-1]:
-            self.trajectory.append((lat, lon))
-            self.update_plot()
-
-    def update_plot(self):
-        self.ax.clear()
-        self.ax.set_title("Trajetória do Aeromodelo")
-        self.ax.set_xlabel("Longitude")
-        self.ax.set_ylabel("Latitude")
-        self.ax.grid(True)
-        if self.trajectory:
-            lons, lats = zip(*self.trajectory)
-            self.ax.plot(lons, lats, 'b-', linewidth=2)
-        self.canvas.draw()
-
-    def abrir_no_google_maps(self):
-        if self.trajectory:
-            lat, lon = self.trajectory[-1]
-            webbrowser.open(f"https://www.google.com/maps?q={lat},{lon}")
-
-    def salvar_trajetoria(self):
-        self.fig.savefig("trajetoria.png")
-        QMessageBox.information(self, "Salvo", "Trajetória salva com sucesso!")
+    def reset_modelo(self):
+        self.modelo = self.modelo_original.copy()
+        self.plotter.clear()
+        self.plotter.add_mesh(self.modelo, color="white")
+        self.plotter.update()
 
     def toggle_animation(self):
         if self.animating:
@@ -181,8 +159,33 @@ class MainWindow(QMainWindow):
         self.spin_pitch.setValue(np.cos(np.radians(self.animation_step)) * 30)
         self.aplicar_rotacao()
 
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_())
+    def salvar_trajetoria(self):
+        self.fig.savefig("src/main/resources/trajectories/trajetoria.png")
+        QMessageBox.information(self, "Salvo", "Trajetória salva com sucesso!")
+        
+    def add_point(self):
+        try:
+            lat, lon = float(self.edit_lat.text()), float(self.edit_lon.text())
+        except ValueError:
+            QMessageBox.warning(self, "Erro", "Valores inválidos!")
+            return
+        
+        if not self.trajectory or (lat, lon) != self.trajectory[-1]:
+            self.trajectory.append((lat, lon))
+            self.update_plot()
+
+    def abrir_no_google_maps(self):
+        if self.trajectory:
+            lat, lon = self.trajectory[-1]
+            webbrowser.open(f"https://www.google.com/maps?q={lat},{lon}")
+            
+    def update_plot(self):
+        self.ax.clear()
+        self.ax.set_title("Trajetória do Aeromodelo")
+        self.ax.set_xlabel("Longitude")
+        self.ax.set_ylabel("Latitude")
+        self.ax.grid(True)
+        if self.trajectory:
+            lons, lats = zip(*self.trajectory)
+            self.ax.plot(lons, lats, 'b-', linewidth=2)
+        self.canvas.draw()
