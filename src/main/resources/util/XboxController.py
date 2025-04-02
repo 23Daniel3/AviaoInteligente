@@ -1,6 +1,9 @@
 import pygame
 
 class XboxController:
+    
+    DEADBAND = 0.1
+    
     def __init__(self, port=0):
         pygame.init()
         pygame.joystick.init()
@@ -84,27 +87,27 @@ class XboxController:
     def getLeftX(self):
         """Retorna o valor do eixo X do joystick esquerdo."""
         pygame.event.pump()
-        return round(self.joystick.get_axis(0), 2)
+        return self.with_deadband(round(self.joystick.get_axis(0), 2))
     
     def getLeftY(self):
         """Retorna o valor do eixo Y do joystick esquerdo (invertido para alinhamento correto)."""
         pygame.event.pump()
-        return round(-self.joystick.get_axis(1), 2)
+        return self.with_deadband(round(-self.joystick.get_axis(1), 2))
     
     def getRightX(self):
         """Retorna o valor do eixo X do joystick direito."""
         pygame.event.pump()
-        return round(self.joystick.get_axis(2), 2)
+        return self.with_deadband(round(self.joystick.get_axis(2), 2))
     
     def getRightTrigger(self):
         pygame.event.pump()
         raw_value = self.joystick.get_axis(5)
-        return round((raw_value + 1) / 2, 2)
+        return self.with_deadband(round((raw_value + 1) / 2, 2))
         
     def getLeftTrigger(self):
         pygame.event.pump()
         raw_value = self.joystick.get_axis(4)
-        return round((raw_value + 1) / 2, 2)
+        return self.with_deadband(round((raw_value + 1) / 2, 2))
     
     def close(self):
         """Fecha a conexão com o controle."""
@@ -117,7 +120,7 @@ class XboxController:
         ele mantém o valor do Right Trigger no momento da pressão do LB.
         """
         pygame.event.pump()
-        right_trigger = self.getRightTrigger()  # Assumindo que o eixo 5 é o RT
+        right_trigger = self.getRightTrigger() 
         lb_pressed = self.getLeftBumper()
 
         if lb_pressed:
@@ -125,16 +128,21 @@ class XboxController:
                 self._rt_locked_value = right_trigger
             return self._rt_locked_value
         
-        self._rt_locked_value = right_trigger  # Atualiza quando LB não está pressionado
+        self._rt_locked_value = right_trigger  
         return right_trigger
-    
+
+    def with_deadband(self, value):
+        if abs(value) < self.DEADBAND:
+            return 0
+        return (value - self.DEADBAND if value > 0 else value + self.DEADBAND) / (1 - self.DEADBAND)
+
     def get_left_trigger_locked(self):
         """
         Retorna o valor do Left Trigger normalmente, mas se o RB for pressionado,
         ele mantém o valor do Left Trigger no momento da pressão do RB.
         """
         pygame.event.pump()
-        right_trigger = self.getLeftTrigger()  # Assumindo que o eixo 5 é o RT
+        right_trigger = self.getLeftTrigger()
         lb_pressed = self.getRightBumper()
 
         if lb_pressed:
@@ -142,11 +150,10 @@ class XboxController:
                 self._rt_locked_value = right_trigger
             return self._rt_locked_value
         
-        self._rt_locked_value = right_trigger  # Atualiza quando LB não está pressionado
+        self._rt_locked_value = right_trigger
         return right_trigger
 
 
-# # Exemplo de uso:
 # if __name__ == "__main__":
 #     try:
 #         controller = XboxController()
