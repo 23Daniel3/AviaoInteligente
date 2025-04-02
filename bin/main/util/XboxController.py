@@ -99,14 +99,19 @@ class XboxController:
         pygame.event.pump()
         return self.with_deadband(round(self.joystick.get_axis(2), 2))
     
-    def getRightTrigger(self):
+    def getRightY(self):
+        """Retorna o valor do eixo Y do joystick direito."""
         pygame.event.pump()
-        raw_value = self.joystick.get_axis(5)
-        return self.with_deadband(round((raw_value + 1) / 2, 2))
-        
+        return self.with_deadband(-round(self.joystick.get_axis(3), 2))
+    
     def getLeftTrigger(self):
         pygame.event.pump()
         raw_value = self.joystick.get_axis(4)
+        return self.with_deadband(round((raw_value + 1) / 2, 2))
+    
+    def getRightTrigger(self):
+        pygame.event.pump()
+        raw_value = self.joystick.get_axis(5)
         return self.with_deadband(round((raw_value + 1) / 2, 2))
     
     def close(self):
