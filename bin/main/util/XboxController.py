@@ -1,52 +1,44 @@
 import pygame
-import time
 
 class XboxController:
     def __init__(self, port=0):
         pygame.init()
         pygame.joystick.init()
-        self.port = port
-        self.joystick = None
-        self.connect_controller()
-
-    def connect_controller(self):
-        while pygame.joystick.get_count() == 0:
-            print("[Aviso] Nenhum controle encontrado. Conecte um controle.")
-            time.sleep(2)
-            pygame.joystick.quit()
-            pygame.joystick.init()
         
-        self.joystick = pygame.joystick.Joystick(self.port)
+        if pygame.joystick.get_count() == 0:
+            raise Exception("Nenhum controle encontrado!")
+        
+        self.joystick = pygame.joystick.Joystick(port)
         self.joystick.init()
-        print("Controle conectado!")
-
-    def refresh(self):
-        """Atualiza os eventos do pygame para capturar os estados mais recentes."""
-        pygame.event.pump()
     
     def get_buttons(self):
-        self.refresh()
+        """Retorna um dicionário com o estado dos botões."""
+        pygame.event.pump()
         return {f'button_{i}': self.joystick.get_button(i) for i in range(self.joystick.get_numbuttons())}
     
     def button(self, button_index):
-        self.refresh()
+        """Retorna True se o botão específico estiver pressionado, senão False."""
+        pygame.event.pump()
         return self.joystick.get_button(button_index) == 1
     
     def get_axes(self):
-        self.refresh()
+        """Retorna um dicionário com os valores dos eixos analógicos."""
+        pygame.event.pump()
         return {f'ax{i}': round(self.joystick.get_axis(i), 2) for i in range(self.joystick.get_numaxes())}
     
     def get_hats(self):
-        self.refresh()
+        """Retorna um dicionário com o estado dos direcionais digitais (D-Pad)."""
+        pygame.event.pump()
         return self.joystick.get_hat(0)
     
     def get_all_inputs(self):
+        """Retorna um dicionário com todos os dados do controle."""
         return {
             "buttons": self.get_buttons(),
             "axes": self.get_axes(),
             "hats": self.get_hats()
         }
-
+    
     def getA(self):
         return self.button(0)
     
@@ -90,23 +82,37 @@ class XboxController:
         return self.get_hats()[0] == 1
     
     def getLeftX(self):
-        self.refresh()
+        """Retorna o valor do eixo X do joystick esquerdo."""
+        pygame.event.pump()
         return round(self.joystick.get_axis(0), 2)
     
     def getLeftY(self):
-        self.refresh()
+        """Retorna o valor do eixo Y do joystick esquerdo (invertido para alinhamento correto)."""
+        pygame.event.pump()
         return round(-self.joystick.get_axis(1), 2)
     
     def getRightX(self):
-        self.refresh()
+        """Retorna o valor do eixo X do joystick direito."""
+        pygame.event.pump()
         return round(self.joystick.get_axis(2), 2)
     
     def getRightY(self):
-        self.refresh()
+        """Retorna o valor do eixo Y do joystick direito (invertido para alinhamento correto)."""
+        pygame.event.pump()
         return round(-self.joystick.get_axis(3), 2)
     
     def close(self):
-        if self.joystick:
-            self.joystick.quit()
+        """Fecha a conexão com o controle."""
+        self.joystick.quit()
         pygame.quit()
 
+# # Exemplo de uso:
+# if __name__ == "__main__":
+#     try:
+#         controller = XboxController()
+#         print("Controle conectado!")
+#         while True:
+#             inputs = (f"POVDown: {controller.getLeftStick()}, POVUp: {controller.getRightStick()}, POVLeft: {controller.getX()}, POVRight: {controller.getY()}")
+#             print(inputs)
+#     except Exception as e:
+#         print(e)
