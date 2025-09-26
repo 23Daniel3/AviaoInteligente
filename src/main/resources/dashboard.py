@@ -4,7 +4,6 @@ import math
 import socket
 import numpy as np
 import pyvista as pv
-from scipy.spatial.transform import Rotation as R
 import webbrowser
 import matplotlib
 from PyQt5.QtCore import QTimer, Qt
@@ -18,6 +17,7 @@ from PyQt5.QtWidgets import (
 )
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from pyvistaqt import QtInteractor
+from util.XboxController import XboxController  # ✅ Import do controle
 
 # Caminho do modelo CAD
 modelo_path = "C:/Users/danie/Desktop/Programacao/Aviao_Inteligente/src/main/resources/modelo.obj"
@@ -46,18 +46,40 @@ class MainWindow(QMainWindow):
         self.trajectory = []
 
         # Conexões TCP
-        self.esp32_ip = "192.168.4.1"  # IP padrão do ESP32 (ajuste conforme necessário)
+        self.esp32_ip = "192.168.4.1"
         self.gyro_sock = None
         self.log_sock = None
+        self.control_sock = None
         self.gyro_buf = b""
         self.log_buf = b""
+
+        # ✅ Criar tabs primeiro (incluindo aba de log)
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+
+        # Aba de Log (precisa vir antes do uso de self.log)
+        self.log_tab = QWidget()
+        log_layout = QVBoxLayout(self.log_tab)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        log_layout.addWidget(self.log_text)
+        self.tabs.addTab(self.log_tab, "Log de Conexão")
+
+        # Xbox Controller (agora pode chamar self.log sem erro)
+        try:
+            self.controller = XboxController()
+            self.log("✅ Controle Xbox detectado", "green")
+        except Exception as e:
+            self.controller = None
+            self.log(f"❌ Erro ao inicializar controle: {e}", "red")
+
 
         # Timer de conexão
         self.connect_timer = QTimer()
         self.connect_timer.timeout.connect(self.try_connect)
         self.connect_timer.start(3000)
 
-        # Timer de leitura
+        # Timer de leitura dos dados do ESP32
         self.gyro_timer = QTimer()
         self.gyro_timer.timeout.connect(self.read_gyro)
         self.gyro_timer.start(2)
@@ -65,6 +87,11 @@ class MainWindow(QMainWindow):
         self.log_timer = QTimer()
         self.log_timer.timeout.connect(self.read_logs)
         self.log_timer.start(200)
+
+        # Timer para envio do controle Xbox
+        self.control_timer = QTimer()
+        self.control_timer.timeout.connect(self.send_control)
+        self.control_timer.start(10)  # ~20 Hz
 
         # Tabs principais
         self.tabs = QTabWidget()
@@ -201,15 +228,25 @@ class MainWindow(QMainWindow):
                 self.log_sock = None
                 self.log(f"❌ Erro ao conectar logs: {e}", "red")
 
+        if not self.control_sock:
+            try:
+                self.control_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.control_sock.settimeout(1)
+                self.control_sock.connect((self.esp32_ip, 10000))
+                self.control_sock.setblocking(False)
+                self.log("✅ Conectado ao socket de controle (10000)", "green")
+            except Exception as e:
+                self.control_sock = None
+                self.log(f"❌ Erro ao conectar controle: {e}", "red")
+
     def close_sockets(self):
-        if self.gyro_sock:
-            try: self.gyro_sock.close()
-            except: pass
-        if self.log_sock:
-            try: self.log_sock.close()
-            except: pass
+        for sock in [self.gyro_sock, self.log_sock, self.control_sock]:
+            if sock:
+                try: sock.close()
+                except: pass
         self.gyro_sock = None
         self.log_sock = None
+        self.control_sock = None
 
     def _pop_lines(self, buf):
         lines = []
@@ -243,8 +280,8 @@ class MainWindow(QMainWindow):
                     if not (_is_finite(roll) and _is_finite(pitch) and _is_finite(yaw)):
                         continue
                     self.spin_roll.setValue(roll)
-                    self.spin_pitch.setValue(-pitch)
-                    self.spin_yaw.setValue(0)
+                    self.spin_pitch.setValue(pitch)
+                    self.spin_yaw.setValue(yaw)
                     self.aplicar_rotacao()
                 except Exception as e:
                     self.log(f"⚠️ Erro processando gyro: {e}", "orange")
@@ -275,11 +312,43 @@ class MainWindow(QMainWindow):
             self.log(f"❌ Conexão perdida logs: {e}", "red")
             self.log_sock = None
 
+    def send_control(self):
+        if not self.control_sock or not self.controller:
+            return
+        try:
+            val = self.controller.getRightX()  # entre -1 e 1
+            msg = f"{val}\n"
+            self.control_sock.sendall(msg.encode("utf-8"))
+        except Exception as e:
+            self.log(f"⚠️ Erro enviando controle: {e}", "orange")
+            self.control_sock = None
+
     def aplicar_rotacao(self):
-        yaw, pitch, roll = self.spin_yaw.value(), self.spin_pitch.value(), self.spin_roll.value()
-        modelo.points = modelo_original.points.copy() - centroide
-        rot = R.from_euler('zyx', [yaw, pitch, roll], degrees=True).as_matrix()
-        modelo.points = modelo.points @ rot.T + centroide
+        yaw_deg = self.spin_yaw.value()
+        pitch_deg = self.spin_pitch.value()
+        roll_deg = self.spin_roll.value()
+
+        yaw = math.radians(yaw_deg)
+        pitch = math.radians(pitch_deg)
+        roll = math.radians(roll_deg)
+
+        Rx = np.array([[1, 0, 0],
+                    [0, math.cos(roll), -math.sin(roll)],
+                    [0, math.sin(roll),  math.cos(roll)]])
+
+        Ry = np.array([[ math.cos(pitch), 0, math.sin(pitch)],
+                    [ 0,               1, 0              ],
+                    [-math.sin(pitch), 0, math.cos(pitch)]])
+
+        Rz = np.array([[math.cos(yaw), -math.sin(yaw), 0],
+                    [math.sin(yaw),  math.cos(yaw), 0],
+                    [0,               0,            1]])
+
+        Rmat = Rz @ Ry @ Rx
+
+        pts = modelo_original.points.copy() - centroide
+        modelo.points = (pts @ Rmat.T) + centroide
+
         try:
             self.plotter.update()
             self.plotter.render()
