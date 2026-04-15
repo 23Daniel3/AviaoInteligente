@@ -1,38 +1,29 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
 
+// -------------------------
+// CONFIGURAÇÃO DO MOTOR / ESC
+// -------------------------
 Servo motorEsc;
-const int motorPin = 18;
+const int motorPin = 4;        // pino de sinal do ESC
+int motorPulseMin = 1000;      // µs correspondendo a 0%
+int motorPulseMax = 2000;      // µs correspondendo a 100%
 
-// valores calibrados do ESC
-int motorPulseMin = 1190; // microsegundos no 0%
-int motorPulseMax = 1672; // microsegundos no 100%
-
-// parâmetros de rampa
-const int motorRampStepMs = 50; // tempo entre passos
-const int motorRampStepPct = 1; // passo em %
+// -------------------------
+// FUNÇÕES DE CONTROLE DO MOTOR
+// -------------------------
 
 /**
- * Inicializa o ESC/motor no pino definido
+ * Inicializa o ESC e envia sinal mínimo para armar com segurança
  */
 void motorInit() {
   motorEsc.attach(motorPin, motorPulseMin, motorPulseMax);
-  motorEsc.writeMicroseconds(motorPulseMin); // sempre arma em 0%
-  delay(1500);
+  motorEsc.writeMicroseconds(motorPulseMin); // força 0% no início
+  delay(2000); // tempo típico para o ESC armar
 }
 
 /**
- * Envia comando direto em microsegundos
- * @param us largura de pulso em microsegundos
- */
-void motorWriteMicro(int us) {
-  us = constrain(us, motorPulseMin - 200, motorPulseMax + 200);
-  motorEsc.writeMicroseconds(us);
-}
-
-/**
- * Envia comando em porcentagem (0–100%)
- * @param pct valor percentual de potência
+ * Escreve potência em % (0–100) para o motor
  */
 void motorWritePercent(int pct) {
   pct = constrain(pct, 0, 100);
@@ -41,68 +32,42 @@ void motorWritePercent(int pct) {
 }
 
 /**
- * Faz rampa suave até o valor percentual alvo
- * @param targetPct destino em %
+ * Função de segurança: reinicia o ESC
+ * Força sinal mínimo e reanexa o objeto Servo
  */
-void motorRampToPercent(int targetPct) {
-  int currentUs = motorEsc.readMicroseconds();
-  if (currentUs == 0) currentUs = motorPulseMin;
-  int currentPct = map(constrain(currentUs, motorPulseMin, motorPulseMax),
-                       motorPulseMin, motorPulseMax, 0, 100);
-
-  targetPct = constrain(targetPct, 0, 100);
-
-  if (targetPct > currentPct) {
-    for (int p = currentPct; p <= targetPct; p += motorRampStepPct) {
-      motorWritePercent(p);
-      delay(motorRampStepMs);
-    }
-  } else {
-    for (int p = currentPct; p >= targetPct; p -= motorRampStepPct) {
-      motorWritePercent(p);
-      delay(motorRampStepMs);
-    }
-  }
-  motorWritePercent(targetPct);
-}
-
-/**
- * Rotina de calibração do ESC
- * Envia max e depois min para ensinar limites
- */
-void motorCalibrate() {
-  // passo 1: max throttle
-  motorEsc.writeMicroseconds(motorPulseMax);
-  delay(2000);
-
-  // passo 2: min throttle
-  motorEsc.writeMicroseconds(motorPulseMin);
-  delay(2000);
-}
-
-/**
- * Retorna último valor de microsegundos enviado
- */
-int motorReadMicro() {
-  return motorEsc.readMicroseconds();
-}
-
-/**
- * Retorna último valor em %
- */
-int motorReadPercent() {
-  int us = motorEsc.readMicroseconds();
-  return map(constrain(us, motorPulseMin, motorPulseMax),
-             motorPulseMin, motorPulseMax, 0, 100);
-}
-
-void setup() {
+void motorReset() {
+  motorEsc.detach();
+  delay(100);
   motorInit();
 }
 
-void loop() {
-  // exemplo de uso:
-  // motorWritePercent(30);
-  // motorRampToPercent(70);
-  // motorCalibrate();
+// -------------------------
+// FUNÇÕES UTILITÁRIAS DE CONVERSÃO
+// -------------------------
+
+/**
+ * Converte µs (1000–2000) para porcentagem (0–100)
+ */
+int usToPercent(int us) {
+  us = constrain(us, motorPulseMin, motorPulseMax);
+  return map(us, motorPulseMin, motorPulseMax, 0, 100);
 }
+
+/**
+ * Converte porcentagem (0–100) para µs (1000–2000)
+ */
+int percentToUs(int pct) {
+  pct = constrain(pct, 0, 100);
+  return map(pct, 0, 100, motorPulseMin, motorPulseMax);
+}
+
+// -------------------------
+// SETUP / LOOP
+// -------------------------
+void setup() {
+  Serial.begin(115200);
+  motorInit(); // prepara ESC
+  Serial.println("Motor pronto. Use motorWritePercent(x) para enviar potência.");
+}
+
+void loop() {}
