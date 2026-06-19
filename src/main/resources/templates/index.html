@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-width=1.0">
+    <title>Telemetria do Aeromodelo</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        /* Estilos personalizados para o Horizonte Artificial */
+        .attitude-indicator {
+            width: 200px;
+            height: 200px;
+            border-radius: 50%;
+            overflow: hidden;
+            border: 4px solid #334155;
+            position: relative;
+            background: #87CEEB; /* Céu padrão */
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
+        }
+        .pitch-container {
+            position: absolute;
+            width: 100%;
+            height: 200%;
+            top: -50%;
+            transition: transform 0.1s linear;
+        }
+        .sky { height: 50%; background: linear-gradient(to bottom, #1E3A8A, #3B82F6); }
+        .ground { height: 50%; background: linear-gradient(to bottom, #78350F, #B45309); border-top: 2px solid white; }
+        
+        .airplane-reference {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 140px;
+            height: 4px;
+            background: #FBBF24;
+            z-index: 10;
+        }
+        .airplane-reference::before {
+            content: ''; position: absolute; left: 50%; top: -10px;
+            transform: translateX(-50%); width: 4px; height: 10px; background: #FBBF24;
+        }
+        
+        /* Barra de rolagem suave para logs */
+        .log-container::-webkit-scrollbar { width: 6px; }
+        .log-container::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans h-screen flex flex-col overflow-hidden">
+
+    <header class="bg-slate-800 border-b border-slate-700 px-6 py-3 flex justify-between items-center shrink-0">
+        <div class="flex items-center gap-3">
+            <i class="fa-solid fa-plane-up text-blue-500 text-2xl"></i>
+            <h1 class="text-xl font-bold tracking-wider">AEROSYNC DASHBOARD</h1>
+        </div>
+        <div class="flex items-center gap-6">
+            <div class="flex items-center gap-2">
+                <span id="armedStatus" class="px-3 py-1 rounded-full text-xs font-bold bg-red-500/20 text-red-500 border border-red-500/50">DISARMED</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <div id="connIndicator" class="w-3 h-3 rounded-full bg-red-500 shadow-[0_0_8px_#ef4444]"></div>
+                <span id="connText" class="text-sm text-slate-300">Desconectado</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-1 grid grid-cols-12 gap-4 p-4 overflow-hidden">
+        
+        <div class="col-span-3 flex flex-col gap-4 overflow-hidden">
+            <div class="grid grid-cols-2 gap-4">
+                <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 flex flex-col items-center justify-center">
+                    <span class="text-slate-400 text-xs font-semibold uppercase">Altitude</span>
+                    <div class="flex items-baseline gap-1 mt-1">
+                        <span id="valAlt" class="text-2xl font-bold text-white">0.0</span>
+                        <span class="text-slate-500 text-sm">m</span>
+                    </div>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 flex flex-col items-center justify-center">
+                    <span class="text-slate-400 text-xs font-semibold uppercase">Velocidade</span>
+                    <div class="flex items-baseline gap-1 mt-1">
+                        <span id="valSpd" class="text-2xl font-bold text-blue-400">0.0</span>
+                        <span class="text-slate-500 text-sm">km/h</span>
+                    </div>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 flex flex-col items-center justify-center">
+                    <span class="text-slate-400 text-xs font-semibold uppercase">Bateria</span>
+                    <div class="flex items-baseline gap-1 mt-1">
+                        <span id="valVbat" class="text-2xl font-bold text-green-400">0.0</span>
+                        <span class="text-slate-500 text-sm">V</span>
+                    </div>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 flex flex-col items-center justify-center">
+                    <span class="text-slate-400 text-xs font-semibold uppercase">Sinal (RSSI)</span>
+                    <div class="flex items-baseline gap-1 mt-1">
+                        <span id="valRssi" class="text-2xl font-bold text-white">0</span>
+                        <span class="text-slate-500 text-sm">%</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 flex flex-col items-center flex-1">
+                <h2 class="text-slate-400 text-xs font-semibold uppercase mb-4 w-full text-center">Atitude (Roll/Pitch)</h2>
+                <div class="attitude-indicator mt-2">
+                    <div id="pitch-container" class="pitch-container">
+                        <div class="sky"></div>
+                        <div class="ground"></div>
+                    </div>
+                    <div class="airplane-reference"></div>
+                </div>
+                <div class="flex justify-between w-full px-6 mt-6">
+                    <div class="text-center">
+                        <span class="block text-slate-500 text-xs">PITCH</span>
+                        <span id="valPitch" class="text-lg font-mono text-white">0°</span>
+                    </div>
+                    <div class="text-center">
+                        <span class="block text-slate-500 text-xs">ROLL</span>
+                        <span id="valRoll" class="text-lg font-mono text-white">0°</span>
+                    </div>
+                    <div class="text-center">
+                        <span class="block text-slate-500 text-xs">YAW</span>
+                        <span id="valYaw" class="text-lg font-mono text-white">0°</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-span-6 flex flex-col gap-4 overflow-hidden">
+            <div class="bg-slate-800 rounded-xl border border-slate-700 flex-1 relative overflow-hidden">
+                <div id="map" class="w-full h-full absolute inset-0 z-0"></div>
+                <div class="absolute top-4 left-4 z-[400] bg-slate-900/80 backdrop-blur-sm border border-slate-700 px-3 py-2 rounded-lg text-xs font-mono">
+                    LAT: <span id="valLat" class="text-blue-400">0.0000000</span><br>
+                    LON: <span id="valLon" class="text-blue-400">0.0000000</span>
+                </div>
+                <button onclick="clearTrajectory()" class="absolute top-4 right-4 z-[400] bg-slate-700 hover:bg-slate-600 transition text-white px-3 py-1 rounded text-xs shadow">
+                    Limpar Rastro
+                </button>
+            </div>
+            
+            <div class="bg-slate-800 rounded-xl border border-slate-700 h-64 p-4">
+                <canvas id="telemetryChart"></canvas>
+            </div>
+        </div>
+
+        <div class="col-span-3 flex flex-col gap-4 overflow-hidden">
+            
+            <div class="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                <h2 class="text-slate-400 text-xs font-semibold uppercase mb-3">Motor (Throttle)</h2>
+                <div class="w-full h-6 bg-slate-900 rounded-full overflow-hidden border border-slate-700 relative">
+                    <div id="throttleBar" class="h-full bg-gradient-to-r from-green-500 to-red-500 w-0 transition-all duration-100"></div>
+                    <span id="valThrottle" class="absolute inset-0 flex items-center justify-center text-xs font-bold drop-shadow-md">0%</span>
+                </div>
+            </div>
+
+            <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 flex-1 flex flex-col overflow-hidden">
+                <h2 class="text-slate-400 text-xs font-semibold uppercase mb-3 border-b border-slate-700 pb-2">Console de Eventos</h2>
+                <div id="logConsole" class="flex-1 overflow-y-auto log-container font-mono text-[11px] leading-relaxed pr-2 space-y-1">
+                    </div>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        // ---------------------------------------------------------
+        // Configuração Inicial de UI
+        // ---------------------------------------------------------
+        
+        // Gráfico (Chart.js)
+        const ctx = document.getElementById('telemetryChart').getContext('2d');
+        const maxDataPoints = 60;
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array(maxDataPoints).fill(''),
+                datasets: [
+                    { label: 'Altitude (m)', borderColor: '#60A5FA', data: Array(maxDataPoints).fill(0), borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'y' },
+                    { label: 'Velocidade (km/h)', borderColor: '#34D399', data: Array(maxDataPoints).fill(0), borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'y1' }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: { legend: { labels: { color: '#94A3B8' } } },
+                scales: {
+                    x: { display: false },
+                    y: { type: 'linear', display: true, position: 'left', grid: { color: '#334155' }, ticks: { color: '#94A3B8' } },
+                    y1: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#94A3B8' } }
+                }
+            }
+        });
+
+        // Mapa (Leaflet)
+        const map = L.map('map', { zoomControl: false }).setView([-26.919, -49.066], 15);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+        
+        const planeIcon = L.divIcon({
+            html: '<i class="fa-solid fa-location-arrow text-blue-500 text-xl" style="filter: drop-shadow(0 0 5px rgba(59, 130, 246, 0.8));"></i>',
+            className: 'plane-marker',
+            iconSize: [20, 20],
+            iconAnchor: [10, 10]
+        });
+
+        let marker = L.marker([-26.919, -49.066], {icon: planeIcon}).addTo(map);
+        let pathLine = L.polyline([], {color: '#3B82F6', weight: 3, opacity: 0.7}).addTo(map);
+
+        // ---------------------------------------------------------
+        // Conexão SSE
+        // ---------------------------------------------------------
+        const source = new EventSource('/stream');
+
+        // Atualização de Conexão Frontend
+        function setConnectionStatus(connected) {
+            const ind = document.getElementById('connIndicator');
+            const txt = document.getElementById('connText');
+            if(connected) {
+                ind.className = "w-3 h-3 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]";
+                txt.textContent = "Conectado";
+                txt.className = "text-sm text-green-400 font-semibold";
+            } else {
+                ind.className = "w-3 h-3 rounded-full bg-red-500 shadow-[0_0_8px_#ef4444] animate-pulse";
+                txt.textContent = "Buscando Telemetria...";
+                txt.className = "text-sm text-red-400 font-semibold";
+            }
+        }
+
+        function appendLog(logData) {
+            const consoleDiv = document.getElementById('logConsole');
+            const colors = {
+                info: 'text-blue-300',
+                warn: 'text-yellow-400',
+                error: 'text-red-400',
+                status: 'text-green-300'
+            };
+            const color = colors[logData.level] || 'text-slate-300';
+            const html = `<div><span class="text-slate-500">[${logData.ts}]</span> <span class="${color}">${logData.msg}</span></div>`;
+            consoleDiv.insertAdjacentHTML('beforeend', html);
+            if (consoleDiv.childElementCount > 100) consoleDiv.firstChild.remove();
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        // Eventos SSE
+        source.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'ping') return;
+            
+            if (data.type === 'init') {
+                setConnectionStatus(true);
+                // Carregar histórico de log e trajetória se necessário
+                data.logs.forEach(appendLog);
+                const latlngs = data.trajectory.map(p => [p.lat, p.lon]);
+                pathLine.setLatLngs(latlngs);
+                if (latlngs.length > 0) map.panTo(latlngs[latlngs.length - 1]);
+                return;
+            }
+
+            if (data.type === 'log' || data.type === 'status' || data.type === 'info' || data.type === 'error' || data.type === 'warn') {
+                appendLog(data);
+                return;
+            }
+
+            if (data.type === 'telemetry') {
+                setConnectionStatus(true); // Se tem telemetria, está vivo
+                
+                // Atualizar Cards Textuais
+                if(data.alt !== undefined) document.getElementById('valAlt').innerText = data.alt.toFixed(1);
+                if(data.spd !== undefined) document.getElementById('valSpd').innerText = data.spd.toFixed(1);
+                
+                if(data.vbat !== undefined) {
+                    const vbatEl = document.getElementById('valVbat');
+                    vbatEl.innerText = data.vbat.toFixed(2);
+                    vbatEl.className = `text-2xl font-bold ${data.vbat > 11.0 ? 'text-green-400' : (data.vbat > 10.5 ? 'text-yellow-400' : 'text-red-500 animate-pulse')}`;
+                }
+                
+                if(data.rssi !== undefined) document.getElementById('valRssi').innerText = data.rssi;
+                if(data.lat !== undefined) document.getElementById('valLat').innerText = data.lat.toFixed(6);
+                if(data.lon !== undefined) document.getElementById('valLon').innerText = data.lon.toFixed(6);
+                
+                // Motor / Armado
+                if(data.throttle !== undefined) {
+                    const thr = (data.throttle * 100).toFixed(0);
+                    document.getElementById('throttleBar').style.width = `${thr}%`;
+                    document.getElementById('valThrottle').innerText = `${thr}%`;
+                }
+                if(data.armed !== undefined) {
+                    const armEl = document.getElementById('armedStatus');
+                    if(data.armed) {
+                        armEl.textContent = "ARMED";
+                        armEl.className = "px-3 py-1 rounded-full text-xs font-bold bg-green-500/20 text-green-500 border border-green-500/50";
+                    } else {
+                        armEl.textContent = "DISARMED";
+                        armEl.className = "px-3 py-1 rounded-full text-xs font-bold bg-red-500/20 text-red-500 border border-red-500/50";
+                    }
+                }
+
+                // Horizonte Artificial
+                if(data.pitch !== undefined && data.roll !== undefined && data.yaw !== undefined) {
+                    document.getElementById('valPitch').innerText = data.pitch.toFixed(1) + '°';
+                    document.getElementById('valRoll').innerText = data.roll.toFixed(1) + '°';
+                    document.getElementById('valYaw').innerText = data.yaw.toFixed(1) + '°';
+                    
+                    // Lógica visual do CSS
+                    const pitchTranslate = data.pitch * 1.5; // Escala visual do pitch
+                    const pitchContainer = document.getElementById('pitch-container');
+                    pitchContainer.style.transform = `rotate(${data.roll}deg) translateY(${pitchTranslate}%)`;
+                    
+                    // Rotaciona ícone do mapa pelo YAW
+                    document.querySelector('.plane-marker i').style.transform = `rotate(${data.yaw - 45}deg)`; // -45 porque o ícone aponta pra diagonal
+                }
+
+                // Mapa
+                if(data.lat && data.lon && (data.lat !== 0 && data.lon !== 0)) {
+                    const newLatLng = [data.lat, data.lon];
+                    marker.setLatLng(newLatLng);
+                    pathLine.addLatLng(newLatLng);
+                    map.panTo(newLatLng, {animate: true, duration: 0.5});
+                }
+
+                // Gráficos (Shift and push)
+                if (data.alt !== undefined && data.spd !== undefined) {
+                    chart.data.datasets[0].data.shift();
+                    chart.data.datasets[0].data.push(data.alt);
+                    
+                    chart.data.datasets[1].data.shift();
+                    chart.data.datasets[1].data.push(data.spd);
+                    
+                    chart.update();
+                }
+            }
+        };
+
+        source.onerror = function() {
+            setConnectionStatus(false);
+        };
+
+        // Ações Auxiliares
+        function clearTrajectory() {
+            fetch('/api/clear_trajectory', {method: 'POST'})
+                .then(r => r.json())
+                .then(() => {
+                    pathLine.setLatLngs([]);
+                });
+        }
+    </script>
+</body>
+</html>

@@ -101,6 +101,11 @@ class XboxController:
         pygame.event.pump()
         return round(-self.joystick.get_axis(3), 2)
     
+    def getLeftTrigger(self):
+        """Retorna o valor do gatilho esquerdo."""
+        pygame.event.pump()
+        return round(-self.joystick.get_axis(4), 2)
+    
     def close(self):
         """Fecha a conexão com o controle."""
         self.joystick.quit()
