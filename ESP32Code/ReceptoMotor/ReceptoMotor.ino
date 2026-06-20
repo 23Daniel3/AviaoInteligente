@@ -4,16 +4,41 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 
-constexpr gpio_num_t ESC_GPIO = GPIO_NUM_18;
+// ── Pinos ────────────────────────────────────────────────────────────
+constexpr gpio_num_t ESC_GPIO            = GPIO_NUM_18;
+constexpr gpio_num_t SERVO_AILERON_GPIO  = GPIO_NUM_19;  // Aileron   ← LeftX
+constexpr gpio_num_t SERVO_RUDDER_GPIO   = GPIO_NUM_20;  // Leme      ← RightX
+constexpr gpio_num_t SERVO_ELEVATOR_GPIO = GPIO_NUM_21;  // Profundor ← RightY
+
 constexpr uint8_t CE_PIN   = 4;
 constexpr uint8_t CSN_PIN  = 5;
 constexpr uint8_t SCK_PIN  = 12;
 constexpr uint8_t MISO_PIN = 13;
 constexpr uint8_t MOSI_PIN = 11;
-constexpr int     PWM_MIN  = 1000;
-constexpr int     PWM_MAX  = 2000;
-const uint8_t     address[6] = "NODE1";
 
+// ── Limites PWM ───────────────────────────────────────────────────────
+constexpr int PWM_MIN   = 1000;
+constexpr int PWM_MAX   = 2000;
+constexpr int PWM_MIN_SERVO   = 500;
+constexpr int PWM_MAX_SERVO   = 2500;
+constexpr int SERVO_MID = 1500;
+
+const uint8_t address[6] = "NODE1";
+
+// ── STRUCT SERVO — deve ficar aqui no topo para o IDE gerar
+//    protótipos corretos ──────────────────────────────────
+struct ServoTimer {
+    gpio_num_t         pin;
+    volatile int       pulseUs;
+    esp_timer_handle_t periodTimer;
+    esp_timer_handle_t pulseTimer;
+};
+
+static ServoTimer servos[3]; // [0]=aileron  [1]=leme  [2]=profundor
+
+// ════════════════════════════════════════════════════════
+// ESC — igual ao original
+// ════════════════════════════════════════════════════════
 volatile int      escPulseUs    = PWM_MIN;
 volatile uint32_t ultimoCounter = 0;
 
@@ -39,9 +64,9 @@ void escSetup() {
 
     // Timer: fim do pulso
     esp_timer_create_args_t pulseArgs = {};
-    pulseArgs.callback         = pulseEndCallback;
-    pulseArgs.name             = "esc_pulse";
-    pulseArgs.dispatch_method  = ESP_TIMER_TASK;   // ← era ISR
+    pulseArgs.callback        = pulseEndCallback;
+    pulseArgs.name            = "esc_pulse";
+    pulseArgs.dispatch_method = ESP_TIMER_TASK;   // ← era ISR
     esp_timer_create(&pulseArgs, &pulseTimer);
 
     // Timer: período 50Hz = 20000us
@@ -57,7 +82,59 @@ void escWrite(int us) {
     escPulseUs = constrain(us, PWM_MIN, PWM_MAX);
 }
 
-int motorValue = 0;
+// ════════════════════════════════════════════════════════
+// SERVOS — mesmo padrão do ESC, sem LEDC/Servo.h
+// ════════════════════════════════════════════════════════
+void servoPulseEndCb(void* arg) {
+    ServoTimer* s = (ServoTimer*)arg;
+    gpio_set_level(s->pin, 0);
+}
+
+void servoPeriodCb(void* arg) {
+    ServoTimer* s = (ServoTimer*)arg;
+    gpio_set_level(s->pin, 1);
+    esp_timer_start_once(s->pulseTimer, s->pulseUs);
+}
+
+void servoSetup(ServoTimer& s, gpio_num_t pin, int initialUs,
+                const char* namePulse, const char* namePeriod) {
+    s.pin     = pin;
+    s.pulseUs = initialUs;
+
+    // GPIO
+    gpio_config_t cfg = {};
+    cfg.mode         = GPIO_MODE_OUTPUT;
+    cfg.pin_bit_mask = (1ULL << pin);
+    gpio_config(&cfg);
+    gpio_set_level(pin, 0);
+
+    // Timer: fim do pulso
+    esp_timer_create_args_t pulseArgs = {};
+    pulseArgs.callback        = servoPulseEndCb;
+    pulseArgs.arg             = &s;
+    pulseArgs.name            = namePulse;
+    pulseArgs.dispatch_method = ESP_TIMER_TASK;
+    esp_timer_create(&pulseArgs, &s.pulseTimer);
+
+    // Timer: período 50Hz = 20000us
+    esp_timer_create_args_t periodArgs = {};
+    periodArgs.callback        = servoPeriodCb;
+    periodArgs.arg             = &s;
+    periodArgs.name            = namePeriod;
+    periodArgs.dispatch_method = ESP_TIMER_TASK;
+    esp_timer_create(&periodArgs, &s.periodTimer);
+    esp_timer_start_periodic(s.periodTimer, 20000);
+}
+
+void servoWrite(ServoTimer& s, int us) {
+    s.pulseUs = constrain(us, PWM_MIN_SERVO, PWM_MAX_SERVO);
+}
+
+// ── Valores globais recebidos via rádio ───────────────────
+int motorValue   = 0;
+int aileronValue = SERVO_MID;
+int rudderValue  = SERVO_MID;
+int elevValue    = SERVO_MID;
 
 // ═══════════════════════════════════════════════════════
 // TASK DO RÁDIO — 100% no Core 0
@@ -65,7 +142,12 @@ int motorValue = 0;
 void radioTask(void* param) {
     SPIClass spi(FSPI);
     RF24 radio(CE_PIN, CSN_PIN);
-    struct Packet { uint16_t throttle; };
+    struct Packet {
+        uint16_t throttle;
+        uint16_t aileron;
+        uint16_t rudder;
+        uint16_t elevator;
+    };
 
     pinMode(CE_PIN,  OUTPUT); digitalWrite(CE_PIN,  LOW);
     pinMode(CSN_PIN, OUTPUT); digitalWrite(CSN_PIN, HIGH);
@@ -81,14 +163,17 @@ void radioTask(void* param) {
         radio.startListening();
         Serial.println("[CORE0] RF24 pronto");
     }
-    
+
     radio.flush_rx();
-    
+
     for (;;) {
         if (radio.available()) {
             Packet p;
             while (radio.available()) radio.read(&p, sizeof(p));  // mantém só o último
-            motorValue = constrain((int)p.throttle, PWM_MIN, PWM_MAX);
+            motorValue   = constrain((int)p.throttle, PWM_MIN, PWM_MAX);
+            aileronValue = constrain((int)p.aileron,  PWM_MIN_SERVO, PWM_MAX_SERVO);
+            rudderValue  = constrain((int)p.rudder,   PWM_MIN_SERVO, PWM_MAX_SERVO);
+            elevValue    = constrain((int)p.elevator, PWM_MIN_SERVO, PWM_MAX_SERVO);
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
@@ -108,10 +193,16 @@ void setup() {
     delay(500);
     Serial.println("1 - Serial OK");
 
-    // Sem LEDC, sem Servo.h, sem alocação de timer — zero conflito
+    // ESC — Sem LEDC, sem Servo.h, sem alocação de timer — zero conflito
     escSetup();
     escWrite(PWM_MIN);
     Serial.println("2 - ESC OK (1000us ativo)");
+
+    // Servos — mesmo padrão do ESC
+    servoSetup(servos[0], SERVO_AILERON_GPIO,  SERVO_MID, "srv0_pulse", "srv0_period");
+    servoSetup(servos[1], SERVO_RUDDER_GPIO,   SERVO_MID, "srv1_pulse", "srv1_period");
+    servoSetup(servos[2], SERVO_ELEVATOR_GPIO, SERVO_MID, "srv2_pulse", "srv2_period");
+    Serial.println("3 - Servos OK (1500us centrado)");
 
     Serial.println("\n  [c] Calibrar ESC");
     Serial.println("  [a] Apenas armar");
@@ -138,25 +229,15 @@ void setup() {
     // RF24 só sobe depois do ESC armado, isolado no Core 0
     xTaskCreatePinnedToCore(radioTask, "Radio", 10000, NULL, 1, NULL, 0);
     Serial.println("[CORE0] Radio iniciando...");
-    Serial.println("Envie valores 1000-2000:\n");
+    Serial.println("Pronto!\n");
 }
 
 // ═══════════════════════════════════════════════════════
-// LOOP — Core 1, só ESC
+// LOOP — Core 1, ESC + Servos
 // ═══════════════════════════════════════════════════════
 void loop() {
-    // if (Serial.available() > 0) {
-    //     String entrada = Serial.readStringUntil('\n');
-    //     entrada.trim();
-    //     int valor = entrada.toInt();
-
-    //     if (valor >= PWM_MIN && valor <= PWM_MAX) {
-    //         escWrite(valor);
-    //         Serial.printf("[ESC] → %d us\n", valor);
-    //     } else if (entrada.length() > 0) {
-    //         Serial.println("[ERRO] Use 1000-2000");
-    //     }
-    // }
-
     escWrite(motorValue);
+    servoWrite(servos[0], aileronValue);  // Aileron   ← LeftX
+    servoWrite(servos[1], rudderValue);   // Leme      ← RightX
+    servoWrite(servos[2], elevValue);     // Profundor ← RightY
 }

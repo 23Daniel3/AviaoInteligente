@@ -13,9 +13,15 @@ const uint8_t address[6] = "NODE1";
 
 struct Packet {
     volatile uint16_t throttleUs = 1000;
+    uint16_t aileronUs  = 1500;
+    uint16_t rudderUs   = 1500;
+    uint16_t elevatorUs = 1500;
 };
 
-volatile uint16_t throttleUs = 1000;
+volatile uint16_t throttleUs  = 1000;
+volatile uint16_t aileronUs   = 1500;
+volatile uint16_t rudderUs    = 1500;
+volatile uint16_t elevatorUs  = 1500;
 
 void setup() {
     Serial.begin(115200);
@@ -48,10 +54,14 @@ void readSerial() {
         if (c == '\n' || c == '\r') {
             lineBuffer.trim();
             if (lineBuffer.length() > 0) {
-                int v = lineBuffer.toInt();
-                if (v >= 1000 && v <= 2000) {
-                    throttleUs = v;
-                    Serial.printf("[PC] %d\n", v);  // só ao mudar valor
+                // Formato CSV esperado: "throttle,aileron,rudder,elevator"
+                int v0, v1, v2, v3;
+                if (sscanf(lineBuffer.c_str(), "%d,%d,%d,%d", &v0, &v1, &v2, &v3) == 4) {
+                    if (v0 >= 1000 && v0 <= 2000) throttleUs  = v0;
+                    if (v1 >= 500 && v1 <= 2500) aileronUs   = v1;
+                    if (v2 >= 500 && v2 <= 2500) rudderUs    = v2;
+                    if (v3 >= 500 && v3 <= 2500) elevatorUs  = v3;
+                    Serial.printf("[PC] thr=%d ail=%d rud=%d ele=%d\n", v0, v1, v2, v3);
                 }
                 lineBuffer = "";
             }
@@ -68,7 +78,7 @@ void loop() {
 
     if (millis() - lastTx >= 20) {  // 50 Hz = 20 ms
         lastTx = millis();
-        Packet pkt{throttleUs};
+        Packet pkt{throttleUs, aileronUs, rudderUs, elevatorUs};
         bool ok = radio.write(&pkt, sizeof(pkt));
         if (!ok) Serial.println("[TX] sem ACK");
         // sem printf de sucesso aqui — causa o buffer overflow
