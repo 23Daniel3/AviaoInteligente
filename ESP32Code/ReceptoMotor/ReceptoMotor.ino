@@ -3,12 +3,18 @@
 #include <RF24.h>
 #include "driver/gpio.h"
 #include "esp_timer.h"
+#include <Wire.h>
+#include <SparkFun_BNO080_Arduino_Library.h>  
 
 // ── Pinos ────────────────────────────────────────────────────────────
 constexpr gpio_num_t ESC_GPIO            = GPIO_NUM_18;
-constexpr gpio_num_t SERVO_AILERON_GPIO  = GPIO_NUM_19;  // Aileron   ← LeftX
-constexpr gpio_num_t SERVO_RUDDER_GPIO   = GPIO_NUM_20;  // Leme      ← RightX
-constexpr gpio_num_t SERVO_ELEVATOR_GPIO = GPIO_NUM_21;  // Profundor ← RightY
+constexpr gpio_num_t SERVO_AILERON_GPIO  = GPIO_NUM_35;  // Aileron   ← LeftX
+constexpr gpio_num_t SERVO_RUDDER_GPIO   = GPIO_NUM_36;  // Leme      ← RightX
+constexpr gpio_num_t SERVO_ELEVATOR_GPIO = GPIO_NUM_37;  // Profundor ← RightY
+
+// BNO080/085 I2C — GPIO livres no ESP32-S3 N16R8
+constexpr uint8_t BNO_SDA = 8;
+constexpr uint8_t BNO_SCL = 9;
 
 constexpr uint8_t CE_PIN   = 4;
 constexpr uint8_t CSN_PIN  = 5;
@@ -17,11 +23,11 @@ constexpr uint8_t MISO_PIN = 13;
 constexpr uint8_t MOSI_PIN = 11;
 
 // ── Limites PWM ───────────────────────────────────────────────────────
-constexpr int PWM_MIN   = 1000;
-constexpr int PWM_MAX   = 2000;
-constexpr int PWM_MIN_SERVO   = 500;
-constexpr int PWM_MAX_SERVO   = 2500;
-constexpr int SERVO_MID = 1500;
+constexpr int PWM_MIN       = 1000;
+constexpr int PWM_MAX       = 2000;
+constexpr int PWM_MIN_SERVO = 500;
+constexpr int PWM_MAX_SERVO = 2500;
+constexpr int SERVO_MID     = 1500;
 
 const uint8_t address[6] = "NODE1";
 
@@ -35,6 +41,15 @@ struct ServoTimer {
 };
 
 static ServoTimer servos[3]; // [0]=aileron  [1]=leme  [2]=profundor
+
+// ── BNO080 — biblioteca antiga, API direta sem quaternions ───────────
+BNO080 myIMU;
+bool   bnoOk = false;
+
+// Euler em graus — escritos no loop() (Core 1), lidos futuramente pelo WiFiTask
+volatile float imu_roll  = 0.0f;
+volatile float imu_pitch = 0.0f;
+volatile float imu_yaw   = 0.0f;
 
 // ════════════════════════════════════════════════════════
 // ESC — igual ao original
@@ -55,25 +70,22 @@ void periodCallback(void*) {
 }
 
 void escSetup() {
-    // GPIO
     gpio_config_t cfg = {};
     cfg.mode         = GPIO_MODE_OUTPUT;
     cfg.pin_bit_mask = (1ULL << ESC_GPIO);
     gpio_config(&cfg);
     gpio_set_level(ESC_GPIO, 0);
 
-    // Timer: fim do pulso
     esp_timer_create_args_t pulseArgs = {};
     pulseArgs.callback        = pulseEndCallback;
     pulseArgs.name            = "esc_pulse";
     pulseArgs.dispatch_method = ESP_TIMER_TASK;   // ← era ISR
     esp_timer_create(&pulseArgs, &pulseTimer);
 
-    // Timer: período 50Hz = 20000us
     esp_timer_create_args_t periodArgs = {};
     periodArgs.callback        = periodCallback;
     periodArgs.name            = "esc_period";
-    periodArgs.dispatch_method = ESP_TIMER_TASK;   // ← era ISR
+    periodArgs.dispatch_method = ESP_TIMER_TASK;  // ← era ISR
     esp_timer_create(&periodArgs, &periodTimer);
     esp_timer_start_periodic(periodTimer, 20000);
 }
@@ -101,14 +113,12 @@ void servoSetup(ServoTimer& s, gpio_num_t pin, int initialUs,
     s.pin     = pin;
     s.pulseUs = initialUs;
 
-    // GPIO
     gpio_config_t cfg = {};
     cfg.mode         = GPIO_MODE_OUTPUT;
     cfg.pin_bit_mask = (1ULL << pin);
     gpio_config(&cfg);
     gpio_set_level(pin, 0);
 
-    // Timer: fim do pulso
     esp_timer_create_args_t pulseArgs = {};
     pulseArgs.callback        = servoPulseEndCb;
     pulseArgs.arg             = &s;
@@ -116,7 +126,6 @@ void servoSetup(ServoTimer& s, gpio_num_t pin, int initialUs,
     pulseArgs.dispatch_method = ESP_TIMER_TASK;
     esp_timer_create(&pulseArgs, &s.pulseTimer);
 
-    // Timer: período 50Hz = 20000us
     esp_timer_create_args_t periodArgs = {};
     periodArgs.callback        = servoPeriodCb;
     periodArgs.arg             = &s;
@@ -130,11 +139,37 @@ void servoWrite(ServoTimer& s, int us) {
     s.pulseUs = constrain(us, PWM_MIN_SERVO, PWM_MAX_SERVO);
 }
 
+// ════════════════════════════════════════════════════════
+// IMU — inicializa BNO080 via I2C
+//
+// Notas:
+// • Wire.begin(SDA, SCL) ANTES do myIMU.begin() — obrigatório no ESP32
+// • begin() com intPin=255 = sem pino de interrupção (polling puro)
+// • enableRotationVector(20) = 50 Hz, sincronizado com o resto do sistema
+// • Leitura fica no loop() (Core 1) — seguro pois rádio usa SPI no Core 0
+// ════════════════════════════════════════════════════════
+void imuSetup() {
+    Wire.begin(BNO_SDA, BNO_SCL);
+    Wire.setClock(400000);  // 400kHz — reduz latência de leitura
+
+    // intPin=255 → sem pino de interrupção (polling via dataAvailable)
+    if (!myIMU.begin(BNO080_DEFAULT_ADDRESS, Wire, 255)) {
+        Serial.println("2a - BNO080 ERRO (SDA=8 SCL=9 — verifique fiação e endereço 0x4B)");
+        bnoOk = false;
+        return;
+    }
+
+    // 20ms entre amostras = 50 Hz, igual ao período do ESC e servos
+    myIMU.enableRotationVector(20);
+    bnoOk = true;
+    Serial.println("2a - BNO080 OK (50Hz rotation vector)");
+}
+
 // ── Valores globais recebidos via rádio ───────────────────
-int motorValue   = 0;
-int aileronValue = SERVO_MID;
-int rudderValue  = SERVO_MID;
-int elevValue    = SERVO_MID;
+volatile int motorValue   = 0;
+volatile int aileronValue = SERVO_MID;
+volatile int rudderValue  = SERVO_MID;
+volatile int elevValue    = SERVO_MID;
 
 // ═══════════════════════════════════════════════════════
 // TASK DO RÁDIO — 100% no Core 0
@@ -170,10 +205,10 @@ void radioTask(void* param) {
         if (radio.available()) {
             Packet p;
             while (radio.available()) radio.read(&p, sizeof(p));  // mantém só o último
-            motorValue   = constrain((int)p.throttle, PWM_MIN, PWM_MAX);
-            aileronValue = constrain((int)p.aileron,  PWM_MIN_SERVO, PWM_MAX_SERVO);
-            rudderValue  = constrain((int)p.rudder,   PWM_MIN_SERVO, PWM_MAX_SERVO);
-            elevValue    = constrain((int)p.elevator, PWM_MIN_SERVO, PWM_MAX_SERVO);
+            motorValue   = constrain((int)p.throttle, PWM_MIN,       PWM_MAX);
+            aileronValue = constrain((int)p.aileron,  PWM_MIN_SERVO,  PWM_MAX_SERVO);
+            rudderValue  = constrain((int)p.rudder,   PWM_MIN_SERVO,  PWM_MAX_SERVO);
+            elevValue    = constrain((int)p.elevator, PWM_MIN_SERVO,  PWM_MAX_SERVO);
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
@@ -193,10 +228,13 @@ void setup() {
     delay(500);
     Serial.println("1 - Serial OK");
 
+    // BNO080 — inicializa antes do ESC (sem conflito, usa I2C não SPI)
+    imuSetup();
+
     // ESC — Sem LEDC, sem Servo.h, sem alocação de timer — zero conflito
     escSetup();
     escWrite(PWM_MIN);
-    Serial.println("2 - ESC OK (1000us ativo)");
+    Serial.println("2b - ESC OK (1000us ativo)");
 
     // Servos — mesmo padrão do ESC
     servoSetup(servos[0], SERVO_AILERON_GPIO,  SERVO_MID, "srv0_pulse", "srv0_period");
@@ -204,8 +242,7 @@ void setup() {
     servoSetup(servos[2], SERVO_ELEVATOR_GPIO, SERVO_MID, "srv2_pulse", "srv2_period");
     Serial.println("3 - Servos OK (1500us centrado)");
 
-    Serial.println("\n  [c] Calibrar ESC");
-    Serial.println("  [a] Apenas armar");
+    Serial.println("\n  [a] Apenas armar");
     // while (!Serial.available()) delay(50);
     // char opcao = Serial.read();
     // while (Serial.available()) Serial.read();
@@ -226,18 +263,41 @@ void setup() {
         Serial.println("✅ ESC armado!");
     // }
 
-    // RF24 só sobe depois do ESC armado, isolado no Core 0
+    // RF24 isolado no Core 0 — Wire (I2C) só é acessado do Core 1, sem conflito
     xTaskCreatePinnedToCore(radioTask, "Radio", 10000, NULL, 1, NULL, 0);
     Serial.println("[CORE0] Radio iniciando...");
     Serial.println("Pronto!\n");
 }
 
 // ═══════════════════════════════════════════════════════
-// LOOP — Core 1, ESC + Servos
+// LOOP — Core 1, ESC + Servos + IMU
+//
+// IMU fica aqui (Core 1) por segurança:
+//   Wire (I2C) não é thread-safe no ESP32 Arduino — manter
+//   tudo I2C no mesmo core evita corrupção de dados.
 // ═══════════════════════════════════════════════════════
 void loop() {
     escWrite(motorValue);
     servoWrite(servos[0], aileronValue);  // Aileron   ← LeftX
     servoWrite(servos[1], rudderValue);   // Leme      ← RightX
     servoWrite(servos[2], elevValue);     // Profundor ← RightY
+
+    // ── IMU — leitura não-bloqueante a 50Hz ──────────────────────
+    if (bnoOk) {
+        // hasReset(): sensor resetou (ex: falha de alimentação)
+        // → reativa o relatório de rotation vector
+        if (myIMU.hasReset()) {
+            myIMU.enableRotationVector(20);
+            Serial.println("[IMU] Reset detectado — relatório reativado");
+        }
+
+        if (myIMU.dataAvailable()) {
+            // getRoll/Pitch/Yaw retornam em radianos → converter para graus
+            imu_roll  = myIMU.getRoll()  * 180.0f / PI;
+            imu_pitch = myIMU.getPitch() * 180.0f / PI;
+            imu_yaw   = myIMU.getYaw()   * 180.0f / PI;
+
+            // Formato "roll,pitch,yaw\n" — mesma estrutura esperada pela dashboard
+            Serial.printf("%f,%f,%f\n", imu_roll, imu_pitch, imu_yaw);        }
+    }
 }
