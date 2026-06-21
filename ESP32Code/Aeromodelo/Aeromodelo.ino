@@ -282,22 +282,22 @@ void loop() {
     servoWrite(servos[1], rudderValue);   // Leme      ← RightX
     servoWrite(servos[2], elevValue);     // Profundor ← RightY
 
-    // ── IMU — leitura não-bloqueante a 50Hz ──────────────────────
-    if (bnoOk) {
-        // hasReset(): sensor resetou (ex: falha de alimentação)
-        // → reativa o relatório de rotation vector
-        if (myIMU.hasReset()) {
-            myIMU.enableRotationVector(20);
-            Serial.println("[IMU] Reset detectado — relatório reativado");
-        }
+    // // ── IMU — leitura não-bloqueante a 50Hz ──────────────────────
+    // if (bnoOk) {
+    //     // hasReset(): sensor resetou (ex: falha de alimentação)
+    //     // → reativa o relatório de rotation vector
+    //     if (myIMU.hasReset()) {
+    //         myIMU.enableRotationVector(20);
+    //         Serial.println("[IMU] Reset detectado — relatório reativado");
+    //     }
 
-        if (myIMU.dataAvailable()) {
-            // getRoll/Pitch/Yaw retornam em radianos → converter para graus
-            imu_roll  = myIMU.getRoll()  * 180.0f / PI;
-            imu_pitch = myIMU.getPitch() * 180.0f / PI;
-            imu_yaw   = myIMU.getYaw()   * 180.0f / PI;
+    //     if (myIMU.dataAvailable()) {
+    //         // getRoll/Pitch/Yaw retornam em radianos → converter para graus
+    //         imu_roll  = myIMU.getRoll()  * 180.0f / PI;
+    //         imu_pitch = myIMU.getPitch() * 180.0f / PI;
+    //         imu_yaw   = myIMU.getYaw()   * 180.0f / PI;
 
-            // Formato "roll,pitch,yaw\n" — mesma estrutura esperada pela dashboard
-            Serial.printf("%f,%f,%f\n", imu_roll, imu_pitch, imu_yaw);        }
-    }
+    //         // Formato "roll,pitch,yaw\n" — mesma estrutura esperada pela dashboard
+    //         Serial.printf("%f,%f,%f\n", imu_roll, imu_pitch, imu_yaw);        }
+    // }
 }
