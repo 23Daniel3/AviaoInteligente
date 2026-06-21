@@ -1,6 +1,7 @@
 import os
 import sys
 import math
+import time      # ← já existia
 import socket
 import numpy as np
 import pyvista as pv
@@ -21,7 +22,7 @@ from util.XboxController import XboxController
 import serial
 
 # ── Configurações ────────────────────────────────────────────────────
-SERIAL_PORT  = 'COM4'    # ← troque pela porta do transmissor ESP32
+SERIAL_PORT  = 'COM4'
 SERIAL_BAUD  = 115200
 MODELO_PATH  = "C:/Users/danie/Desktop/Programacao/Aviao_Inteligente/src/main/resources/modelo.obj"
 
@@ -55,6 +56,12 @@ class MainWindow(QMainWindow):
         self.log_sock  = None
         self.gyro_buf  = b""
         self.log_buf   = b""
+
+        # ── Métricas de comunicação ───────────────────────────────── ← NOVO
+        self._pkt_count   = 0      # pacotes recebidos desde o último reset
+        self._last_gyro_t = None   # timestamp do último pacote IMU
+        self._latency_ms  = None   # última latência PING/PONG
+        self._ping_sent_t = None   # timestamp do último PING enviado
 
         # ── Tabs (criado UMA VEZ, aqui) ──────────────────────────────
         self.tabs = QTabWidget()
@@ -98,10 +105,20 @@ class MainWindow(QMainWindow):
         self.log_timer.timeout.connect(self.read_logs)
         self.log_timer.start(200)
 
-        # 50 Hz — sincronizado com o delay(20) do transmissor
+        # 50 Hz — sincronizado com o loop de 20ms do transmissor
         self.control_timer = QTimer()
         self.control_timer.timeout.connect(self.send_control)
         self.control_timer.start(20)
+
+        # Atualiza labels de qualidade a cada 1s ← NOVO
+        self.quality_timer = QTimer()
+        self.quality_timer.timeout.connect(self.update_quality_labels)
+        self.quality_timer.start(1000)
+
+        # PING/PONG a cada 2s para medir latência ← NOVO
+        self.ping_timer = QTimer()
+        self.ping_timer.timeout.connect(self.send_ping)
+        self.ping_timer.start(2000)
 
         # ── Painel esquerdo (modelo 3D + sliders de rotação) ─────────
         left_panel  = QWidget()
@@ -154,7 +171,6 @@ class MainWindow(QMainWindow):
         ip_layout.addWidget(btn_set_ip)
         right_layout.addLayout(ip_layout)
 
-        # Campo de porta serial + botão reconectar controle
         serial_layout = QHBoxLayout()
         lbl_com       = QLabel("Porta Serial:")
         self.edit_com = QLineEdit(SERIAL_PORT)
@@ -164,6 +180,18 @@ class MainWindow(QMainWindow):
         serial_layout.addWidget(self.edit_com)
         serial_layout.addWidget(btn_serial)
         right_layout.addLayout(serial_layout)
+
+        # ── Status de comunicação em tempo real ───────────────────── ← NOVO
+        status_widget = QWidget()
+        status_layout = QHBoxLayout(status_widget)
+        status_layout.setContentsMargins(0, 4, 0, 4)
+        self.lbl_conn    = QLabel("● Desconectado")
+        self.lbl_latency = QLabel("Latência: ---")
+        self.lbl_quality = QLabel("Qualidade: ---")
+        for lbl in (self.lbl_conn, self.lbl_latency, self.lbl_quality):
+            lbl.setStyleSheet("color: gray; font-size: 11px")
+            status_layout.addWidget(lbl)
+        right_layout.addWidget(status_widget)
 
         btn_ctrl = QPushButton("Reconectar Controle Xbox")
         btn_ctrl.clicked.connect(self.reconnect_controller)
@@ -251,6 +279,60 @@ class MainWindow(QMainWindow):
     def log(self, msg, color="black"):
         self.log_text.append(f'<span style="color:{color}">{msg}</span>')
 
+    # ── Mapeamento de eixos ───────────────────────────────────────── ← NOVO
+
+    @staticmethod
+    def map_throttle_to_pwm(axis: float) -> int:
+        """Left trigger → 1000–2000 us (ESC não aceita fora disso)."""
+        if abs(axis) < 0.08:
+            axis = 0.0
+        return int(1500 + max(-1.0, min(1.0, axis)) * 500)
+
+    @staticmethod
+    def map_servo_to_pwm(axis: float) -> int:
+        """Joystick → 500–2500 us (range máximo para curso total dos servos)."""
+        if abs(axis) < 0.08:
+            axis = 0.0
+        return int(1500 + max(-1.0, min(1.0, axis)) * 1000)
+
+    # ── Qualidade de comunicação ──────────────────────────────────── ← NOVO
+
+    def update_quality_labels(self):
+        """Atualiza os labels de status/latência/qualidade a cada 1s."""
+        pps = self._pkt_count   # pacotes recebidos no último segundo
+        self._pkt_count = 0     # reseta contador
+
+        connected = (self._last_gyro_t is not None and
+                     time.time() - self._last_gyro_t < 1.5)
+
+        if connected:
+            q     = min(100, int(pps / 50 * 100))  # esperado: 50 pkt/s
+            color = "green" if q >= 70 else "orange" if q >= 30 else "red"
+            self.lbl_conn.setText("● Conectado")
+            self.lbl_conn.setStyleSheet(f"color: {color}; font-size: 11px")
+            self.lbl_quality.setText(f"Qualidade: {pps} pkt/s ({q}%)")
+            self.lbl_quality.setStyleSheet(f"color: {color}; font-size: 11px")
+        else:
+            self.lbl_conn.setText("● Desconectado")
+            self.lbl_conn.setStyleSheet("color: red; font-size: 11px")
+            self.lbl_quality.setText("Qualidade: ---")
+            self.lbl_quality.setStyleSheet("color: gray; font-size: 11px")
+
+        if self._latency_ms is not None:
+            lat_color = ("green"  if self._latency_ms < 50  else
+                         "orange" if self._latency_ms < 200 else "red")
+            self.lbl_latency.setText(f"Latência: {self._latency_ms:.0f} ms")
+            self.lbl_latency.setStyleSheet(f"color: {lat_color}; font-size: 11px")
+
+    def send_ping(self):
+        """Envia PING para o ESP32 medir latência via PONG."""
+        if self.gyro_sock:
+            try:
+                self._ping_sent_t = time.time()
+                self.gyro_sock.send(b"PING\n")
+            except (BlockingIOError, OSError):
+                self._ping_sent_t = None
+
     # ── Conexões TCP ─────────────────────────────────────────────────
 
     def try_connect(self):
@@ -312,7 +394,16 @@ class MainWindow(QMainWindow):
             lines, self.gyro_buf = self._pop_lines(self.gyro_buf)
             for raw in lines:
                 try:
-                    line  = raw.decode(errors="ignore")
+                    line = raw.decode(errors="ignore")
+
+                    # ── PONG: mede latência ──────────────────────── ← NOVO
+                    if line == "PONG":
+                        if self._ping_sent_t is not None:
+                            self._latency_ms  = (time.time() - self._ping_sent_t) * 1000
+                            self._ping_sent_t = None
+                        continue
+
+                    # ── IMU normal: "roll,pitch,yaw" ──────────────
                     parts = line.split(",")
                     if len(parts) != 3:
                         continue
@@ -323,6 +414,8 @@ class MainWindow(QMainWindow):
                     self.spin_pitch.setValue(pitch)
                     self.spin_yaw.setValue(yaw)
                     self.aplicar_rotacao()
+                    self._pkt_count   += 1          # ← NOVO: conta pacotes
+                    self._last_gyro_t  = time.time() # ← NOVO: timestamp
                 except Exception as e:
                     self.log(f"⚠️ Erro processando gyro: {e}", "orange")
         except BlockingIOError:
@@ -353,22 +446,21 @@ class MainWindow(QMainWindow):
 
     # ── Envio de controle via Serial → transmissor ESP32 ─────────────
     #
-    # Protocolo: "<motorEnabled>,<throttle>\n"
-    #   motorEnabled : 0 ou 1  (leftBumper)
-    #   throttle     : 1000–2000 µs
-    #
-    # Mapeamento do stick esquerdo Y:
-    #   baixo (-1.0) → 1000   centro (0.0) → 1000   cima (1.0) → 2000
-    # (stick solto / centro = motor parado — seguro por padrão)
+    # Protocolo: "throttle,aileron,rudder,elevator\n"  ← ALTERADO
+    #   throttle  : 1000–2000 µs  (left trigger)
+    #   aileron   : 500–2500  µs  (LeftX)
+    #   rudder    : 500–2500  µs  (RightX)
+    #   elevator  : 500–2500  µs  (RightY)
 
     def send_control(self):
         if not self.ser or not self.controller:
             return
         try:
-            lb  = 1 if self.controller.getLeftBumper() else 0
-            raw = self.controller.getLeftY()          # [-1.0 … 1.0]
-            thr = max(1000, min(2000, int(1000 + max(0.0, raw) * 1000)))
-            self.ser.write(f"{lb},{thr}\n".encode())
+            throttle = self.map_throttle_to_pwm(-self.controller.getLeftTrigger())
+            aileron  = self.map_servo_to_pwm(self.controller.getLeftX())
+            rudder   = self.map_servo_to_pwm(self.controller.getRightX())
+            elevator = self.map_servo_to_pwm(self.controller.getRightY())
+            self.ser.write(f"{throttle},{aileron},{rudder},{elevator}\n".encode())
         except Exception as e:
             self.log(f"⚠️ Erro enviando controle serial: {e}", "orange")
 
@@ -379,12 +471,12 @@ class MainWindow(QMainWindow):
         pitch = math.radians(self.spin_pitch.value())
         roll  = math.radians(self.spin_roll.value())
 
-        Rx = np.array([[1, 0,              0             ],
+        Rx = np.array([[1, 0,              0              ],
                        [0, math.cos(roll), -math.sin(roll)],
                        [0, math.sin(roll),  math.cos(roll)]])
 
         Ry = np.array([[ math.cos(pitch), 0, math.sin(pitch)],
-                       [ 0,              1, 0              ],
+                       [ 0,               1, 0              ],
                        [-math.sin(pitch), 0, math.cos(pitch)]])
 
         Rz = np.array([[math.cos(yaw), -math.sin(yaw), 0],
