@@ -28,8 +28,6 @@ BNO080 myIMU;
 #define BNO080_PS0  4
 // Pino PS1 Vai conectado ao 3.3;
 
-unsigned long lastPrint = 0;
-
 void setup() {
   Serial.begin(115200);
   while (!Serial) delay(10);

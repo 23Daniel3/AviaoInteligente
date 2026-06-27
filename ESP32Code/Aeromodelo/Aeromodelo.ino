@@ -4,6 +4,8 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include <Wire.h>
+#include <SparkFun_BNO080_Arduino_Library.h>
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h>
 
 // ── Pinos ────────────────────────────────────────────────────────────
 constexpr gpio_num_t ESC_GPIO            = GPIO_NUM_38;
@@ -16,6 +18,22 @@ constexpr uint8_t CSN_PIN  = 9;
 constexpr uint8_t SCK_PIN  = 10;
 constexpr uint8_t MOSI_PIN = 11;
 constexpr uint8_t MISO_PIN = 12;
+
+// IMU
+// Pinos do barramento SPI (ESP32S3 permite remapear)
+#define PIN_SCK  17
+#define PIN_MISO  16
+#define PIN_MOSI  15
+#define BNO080_CS   7
+#define BNO080_INT  6
+#define BNO080_RST  5
+#define BNO080_PS0  4
+// Pino PS1 Vai conectado ao 3.3;
+
+// GPS
+#define GPS_TX_PIN 37  // <- GPS TX
+#define GPS_RX_PIN 36  // <- GPS RX
+#define GPS_BAUD 9600
 
 // ── Limites PWM ───────────────────────────────────────────────────────
 constexpr int PWM_MIN       = 1000;
@@ -37,10 +55,11 @@ struct ServoTimer {
 
 static ServoTimer servos[3]; // [0]=aileron  [1]=leme  [2]=profundor
 
-// Euler em graus — escritos no loop() (Core 1), lidos futuramente pelo WiFiTask
-volatile float imu_roll  = 0.0f;
-volatile float imu_pitch = 0.0f;
-volatile float imu_yaw   = 0.0f;
+BNO080 myIMU;
+
+SFE_UBLOX_GNSS myGPS;
+
+HardwareSerial GPSSerial(2); // Usa a UART2 do ESP32-S3
 
 // ════════════════════════════════════════════════════════
 // ESC — igual ao original
@@ -84,6 +103,99 @@ void escSetup() {
 void escWrite(int us) {
     escPulseUs = constrain(us, PWM_MIN, PWM_MAX);
 }
+
+// IMU SETUP
+void imuSetup() {
+  delay(1000);
+
+  Serial.println("=== Configurando BNO080 via SPI ===");
+
+  // Remapeia os pinos do SPI antes do begin()
+  SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, BNO080_CS);
+
+  if (myIMU.beginSPI(BNO080_CS, BNO080_PS0, BNO080_INT, BNO080_RST) == false) {
+    Serial.println("ERRO: BNO080 não respondeu via SPI.");
+    Serial.println("Verifique: fiação, PS1=HIGH, alimentação 3.3V, INT conectado.");
+    while (1) delay(100);
+  }
+
+  Serial.println("BNO080 conectado com sucesso!");
+
+  // Habilita relatórios (taxa em ms)
+  myIMU.enableGyro(20);            // giroscópio puro, 50Hz
+  myIMU.enableRotationVector(20);  // orientação fundida (roll/pitch/yaw), 50Hz
+
+  Serial.println("Relatórios habilitados. Iniciando leitura...");
+  Serial.println("gyroX,gyroY,gyroZ,roll,pitch,yaw");
+}
+
+void imuPrintValues() {
+    if (myIMU.dataAvailable()) {
+        float gx = myIMU.getGyroX();
+        float gy = myIMU.getGyroY();
+        float gz = myIMU.getGyroZ();
+
+        float roll  = myIMU.getRoll()  * 180.0 / PI;
+        float pitch = myIMU.getPitch() * 180.0 / PI;
+        float yaw   = myIMU.getYaw()   * 180.0 / PI;
+
+        // Serial.print(gx, 4); Serial.print(",");
+        // Serial.print(gy, 4); Serial.print(",");
+        // Serial.print(gz, 4); Serial.print(",");
+        Serial.print(roll, 2); Serial.print(",");
+        Serial.print(pitch, 2); Serial.print(",");
+        Serial.println(yaw, 2);
+  }
+}
+
+// GPS
+void gpsSetup() {
+    Serial.println("\n=== Inicializando GPS NEO-M8N (Modo Direto 9600) ===");
+
+    // Inicia a comunicação serial direto na velocidade certa
+    GPSSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_TX_PIN, GPS_RX_PIN);
+    delay(200);
+
+    // Conecta com a biblioteca u-blox
+    if (myGPS.begin(GPSSerial) == false) {
+        Serial.println("ERRO: GPS nao respondeu em 115200 baud.");
+        Serial.println("Verifique se os fios estao bem firmes.");
+        while (1) delay(100);
+    }
+
+    // Garante que o envio automático de dados (PVT) continue ativo
+    myGPS.setAutoPVT(true);
+
+    Serial.println("✓ GPS Conectado com sucesso!");
+    Serial.println("Aguardando sinal dos satelites...\n");
+    Serial.println("Status  | Satelites | Latitude   | Longitude   | Altitude | Velocidade");
+    Serial.println("--------------------------------------------------------------------------");
+}
+
+void gpsPrintValues() {
+      // getPVT() retorna verdadeiro a cada 10Hz (10 vezes por segundo) quando chegam dados novos
+  if (myGPS.getPVT()) {
+    byte fixType = myGPS.getFixType(); // 0=Sem fix, 2=2D, 3=3D
+    byte numSV   = myGPS.getSIV();     // Quantidade de satélites
+
+    if (fixType >= 2) {
+      // Converte os valores brutos para unidades legíveis
+      double lat   = myGPS.getLatitude() / 10000000.0;
+      double lon   = myGPS.getLongitude() / 10000000.0;
+      float alt    = myGPS.getAltitude() / 1000.0;       // Metros
+      float speed  = myGPS.getGroundSpeed() / 1000.0;   // Metros por segundo
+      float course = myGPS.getHeading() / 100000.0;     // Graus de direção
+
+      // Alinha tudo em colunas organizadas usando Serial.printf
+      Serial.printf("Fix %dD  |   %02d SV   | %.7f | %.7f | %6.1fm | %5.2f m/s (Rumo: %.1f°)\n", 
+                    fixType, numSV, lat, lon, alt, speed, course);
+    } else {
+      // Se estiver sem sinal, mostra apenas quantos satélites ele está rastreando
+      Serial.printf("Sem Fix |   %02d SV   | Procurando satelites...\n", numSV);
+    }
+  }
+}
+
 
 // ════════════════════════════════════════════════════════
 // SERVOS — mesmo padrão do ESC, sem LEDC/Servo.h
@@ -140,7 +252,7 @@ volatile int elevValue    = SERVO_MID;
 // TASK DO RÁDIO — 100% no Core 0
 // ═══════════════════════════════════════════════════════
 void radioTask(void* param) {
-    SPIClass spi(FSPI);
+    SPIClass spi(HSPI);
     RF24 radio(CE_PIN, CSN_PIN);
     struct Packet {
         uint16_t throttle;
@@ -156,7 +268,7 @@ void radioTask(void* param) {
     if (!radio.begin(&spi)) {
         Serial.println("[CORE0][ERRO] RF24 falhou");
     } else {
-        radio.setPALevel(RF24_PA_MAX);
+        radio.setPALevel(RF24_PA_MIN);
         radio.setDataRate(RF24_250KBPS);
         radio.setChannel(76);
         radio.openReadingPipe(1, address);
@@ -229,6 +341,9 @@ void setup() {
     xTaskCreatePinnedToCore(radioTask, "Radio", 10000, NULL, 1, NULL, 0);
     Serial.println("[CORE0] Radio iniciando...");
     Serial.println("Pronto!\n");
+
+    imuSetup();
+    gpsSetup();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -243,4 +358,5 @@ void loop() {
     servoWrite(servos[0], aileronValue);  // Aileron   ← LeftX
     servoWrite(servos[1], rudderValue);   // Leme      ← RightX
     servoWrite(servos[2], elevValue);     // Profundor ← RightY
+    gpsPrintValues();
 }
