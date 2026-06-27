@@ -1,30 +1,39 @@
 import os
 import sys
 import math
-import time      # ← já existia
-import socket
+import time
+import queue
+import threading
+from collections import deque
+
 import numpy as np
 import pyvista as pv
-import webbrowser
+import serial
 import matplotlib
-from PyQt5.QtCore import QTimer, Qt
 matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QLabel, QDoubleSpinBox, QLineEdit, QPushButton,
-    QMessageBox, QSizePolicy, QTextEdit, QTabWidget
+    QGridLayout, QLabel, QLineEdit, QPushButton, QGroupBox,
+    QProgressBar, QSizePolicy, QTextEdit
 )
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from pyvistaqt import QtInteractor
+
 from util.XboxController import XboxController
-import serial
 
 # ── Configurações ────────────────────────────────────────────────────
 SERIAL_PORT  = 'COM4'
 SERIAL_BAUD  = 115200
 MODELO_PATH  = "C:/Users/danie/Desktop/Programacao/Aviao_Inteligente/src/main/resources/modelo.obj"
+CONTROL_INTERVAL_MS  = 20    # 50 Hz — controle (prioridade máxima)
+QUEUE_DRAIN_MS       = 10    # drena fila de telemetria (só parsing + labels, SEM render)
+RENDER_3D_INTERVAL   = 0.05  # s — render do modelo 3D, máx 20 Hz
+PLOT_INTERVAL        = 0.50  # s — redraw do matplotlib, máx 2 Hz
+QUALITY_INTERVAL_MS  = 1000
+TRAJECTORY_MAX       = 4000
 
 if not os.path.exists(MODELO_PATH):
     print(f"Erro: Arquivo {MODELO_PATH} não encontrado!")
@@ -42,489 +51,479 @@ def _is_finite(x):
         return False
 
 
+def _pop_lines(buf: bytes):
+    """Extrai linhas completas de um buffer de bytes — sem instanciar objetos extras."""
+    lines = []
+    parts = buf.split(b'\n')
+    buf = parts[-1]
+    for raw in parts[:-1]:
+        line = raw.replace(b'\r', b'').strip()
+        if line:
+            lines.append(line)
+    return lines, buf
+
+
+def map_axis_centered(axis: float) -> int:
+    if abs(axis) < 0.08:
+        axis = 0.0
+    return int(round(50 + max(-1.0, min(1.0, axis)) * 50))
+
+
+def map_trigger(value: float) -> int:
+    if value < 0.08:
+        value = 0.0
+    return int(round(min(1.0, value) * 100))
+
+
+DARK_STYLE = """
+QMainWindow, QWidget {
+    background-color: #1b1e26;
+    color: #e6e6e6;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 12px;
+}
+QGroupBox {
+    border: 1px solid #343a48;
+    border-radius: 8px;
+    margin-top: 10px;
+    padding: 10px;
+    font-weight: 600;
+    color: #8fb8ff;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 6px;
+}
+QLineEdit {
+    background-color: #11141a;
+    border: 1px solid #343a48;
+    border-radius: 5px;
+    padding: 4px 6px;
+    color: #e6e6e6;
+}
+QPushButton {
+    background-color: #2a3142;
+    border: 1px solid #3d4659;
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #e6e6e6;
+}
+QPushButton:hover  { background-color: #364056; }
+QPushButton:pressed { background-color: #222838; }
+QProgressBar {
+    background-color: #11141a;
+    border: 1px solid #343a48;
+    border-radius: 5px;
+    text-align: center;
+    color: #e6e6e6;
+    height: 16px;
+}
+QProgressBar::chunk { background-color: #4f8cff; border-radius: 5px; }
+QTextEdit {
+    background-color: #11141a;
+    border: 1px solid #343a48;
+    border-radius: 5px;
+}
+QLabel#bigStatus { font-size: 13px; font-weight: 600; }
+"""
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dashboard de Monitoramento")
-        self.resize(1600, 900)
+        self.setWindowTitle("Dashboard de Voo — Aeromodelo Inteligente")
+        self.resize(1500, 880)
+        self.setStyleSheet(DARK_STYLE)
 
-        self.trajectory = []
-
-        # Conexões TCP (giroscópio + logs via WiFi do ESP32-S3)
-        self.esp32_ip  = "192.168.4.1"
-        self.gyro_sock = None
-        self.log_sock  = None
-        self.gyro_buf  = b""
-        self.log_buf   = b""
-
-        # ── Métricas de comunicação ───────────────────────────────── ← NOVO
-        self._pkt_count   = 0      # pacotes recebidos desde o último reset
-        self._last_gyro_t = None   # timestamp do último pacote IMU
-        self._latency_ms  = None   # última latência PING/PONG
-        self._ping_sent_t = None   # timestamp do último PING enviado
-
-        # ── Tabs (criado UMA VEZ, aqui) ──────────────────────────────
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-
-        # Aba Dashboard
-        dashboard_tab = QWidget()
-        main_layout   = QHBoxLayout(dashboard_tab)
-        self.tabs.addTab(dashboard_tab, "Dashboard")
-
-        # Aba de Log — precisa existir ANTES do primeiro self.log()
-        log_tab        = QWidget()
-        log_layout     = QVBoxLayout(log_tab)
-        self.log_text  = QTextEdit()
-        self.log_text.setReadOnly(True)
-        log_layout.addWidget(self.log_text)
-        self.tabs.addTab(log_tab, "Log de Conexão")
-
-        # ── Xbox Controller ──────────────────────────────────────────
-        try:
-            self.controller = XboxController()
-            self.log("✅ Controle Xbox detectado", "green")
-        except Exception as e:
-            self.controller = None
-            self.log(f"❌ Erro ao inicializar controle: {e}", "red")
-
-        # ── Serial para o transmissor ESP32 (USB) ────────────────────
+        # ── Estado ──────────────────────────────────────────────────
+        self.trajectory = deque(maxlen=TRAJECTORY_MAX)
         self.ser = None
-        self._open_serial(SERIAL_PORT)
 
-        # ── Timers ───────────────────────────────────────────────────
-        self.connect_timer = QTimer()
-        self.connect_timer.timeout.connect(self.try_connect)
-        self.connect_timer.start(3000)
+        # Fila entre thread de leitura serial e thread principal do Qt
+        self._telem_queue = queue.Queue()
+        self._running = True           # flag de encerramento para a thread
+        self._ser_lock = threading.Lock()  # protege self.ser de acesso concorrente
 
-        self.gyro_timer = QTimer()
-        self.gyro_timer.timeout.connect(self.read_gyro)
-        self.gyro_timer.start(2)
+        # Estado de telemetria — só escrito pela thread principal
+        self._pkt_count   = 0
+        self._last_rx_t   = None
+        self._latency_ms  = None
 
-        self.log_timer = QTimer()
-        self.log_timer.timeout.connect(self.read_logs)
-        self.log_timer.start(200)
+        # Dados de render pendentes — setados no drain, consumidos no render timer
+        # (evita render por dentro do loop de drain, que bloquearia o main thread)
+        self._pending_rotation = None   # (roll, pitch, yaw) mais recente
+        self._plot_dirty = False        # True = há pontos novos no mapa
+        self._last_3d_t  = 0.0         # timestamp do último render 3D
+        self._last_plot_t = 0.0        # timestamp do último draw do matplotlib
 
-        # 50 Hz — sincronizado com o loop de 20ms do transmissor
-        self.control_timer = QTimer()
-        self.control_timer.timeout.connect(self.send_control)
-        self.control_timer.start(20)
+        # ── Build UI ────────────────────────────────────────────────
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QHBoxLayout(central)
 
-        # Atualiza labels de qualidade a cada 1s ← NOVO
-        self.quality_timer = QTimer()
-        self.quality_timer.timeout.connect(self.update_quality_labels)
-        self.quality_timer.start(1000)
+        # Coluna esquerda
+        left_col = QVBoxLayout()
+        root.addLayout(left_col, 3)
 
-        # PING/PONG a cada 2s para medir latência ← NOVO
-        self.ping_timer = QTimer()
-        self.ping_timer.timeout.connect(self.send_ping)
-        self.ping_timer.start(2000)
-
-        # ── Painel esquerdo (modelo 3D + sliders de rotação) ─────────
-        left_panel  = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        main_layout.addWidget(left_panel, 3)
-
+        cad_group = QGroupBox("Atitude (modelo 3D)")
+        cad_layout = QVBoxLayout(cad_group)
         self.plotter = QtInteractor(self)
         self.plotter.add_mesh(modelo, color="white")
         self.plotter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        left_layout.addWidget(self.plotter, 5)
+        cad_layout.addWidget(self.plotter, 6)
 
-        rot_group  = QWidget()
-        rot_layout = QGridLayout(rot_group)
-        left_layout.addWidget(rot_group, 1)
+        attitude_readout = QGridLayout()
+        self.lbl_roll  = QLabel("Roll: --- °")
+        self.lbl_pitch = QLabel("Pitch: --- °")
+        self.lbl_yaw   = QLabel("Yaw: --- °")
+        for i, lbl in enumerate((self.lbl_roll, self.lbl_pitch, self.lbl_yaw)):
+            lbl.setObjectName("bigStatus")
+            attitude_readout.addWidget(lbl, 0, i)
+        cad_layout.addLayout(attitude_readout)
+        left_col.addWidget(cad_group, 6)
 
-        lbl_yaw        = QLabel("Yaw:")
-        self.spin_yaw  = QDoubleSpinBox()
-        self.spin_yaw.setRange(-180, 180)
-        self.spin_yaw.setDecimals(2)
+        control_group = QGroupBox("Controle enviado (0–100)")
+        control_layout = QGridLayout(control_group)
+        self.bar_throttle = QProgressBar()
+        self.bar_aileron  = QProgressBar()
+        self.bar_rudder   = QProgressBar()
+        self.bar_elevator = QProgressBar()
+        for bar in (self.bar_throttle, self.bar_aileron, self.bar_rudder, self.bar_elevator):
+            bar.setRange(0, 100)
+            bar.setValue(0)
+        control_layout.addWidget(QLabel("Motor"),     0, 0)
+        control_layout.addWidget(self.bar_throttle,   0, 1)
+        control_layout.addWidget(QLabel("Aileron"),   1, 0)
+        control_layout.addWidget(self.bar_aileron,    1, 1)
+        control_layout.addWidget(QLabel("Leme"),      2, 0)
+        control_layout.addWidget(self.bar_rudder,     2, 1)
+        control_layout.addWidget(QLabel("Profundor"), 3, 0)
+        control_layout.addWidget(self.bar_elevator,   3, 1)
+        left_col.addWidget(control_group, 1)
 
-        lbl_pitch        = QLabel("Pitch:")
-        self.spin_pitch  = QDoubleSpinBox()
-        self.spin_pitch.setRange(-180, 180)
-        self.spin_pitch.setDecimals(2)
+        # Coluna direita
+        right_col = QVBoxLayout()
+        root.addLayout(right_col, 2)
 
-        lbl_roll        = QLabel("Roll:")
-        self.spin_roll  = QDoubleSpinBox()
-        self.spin_roll.setRange(-180, 180)
-        self.spin_roll.setDecimals(2)
-
-        rot_layout.addWidget(lbl_yaw,        0, 0)
-        rot_layout.addWidget(self.spin_yaw,  0, 1)
-        rot_layout.addWidget(lbl_pitch,      1, 0)
-        rot_layout.addWidget(self.spin_pitch, 1, 1)
-        rot_layout.addWidget(lbl_roll,       2, 0)
-        rot_layout.addWidget(self.spin_roll, 2, 1)
-
-        # ── Painel direito (IP + trajetória) ─────────────────────────
-        right_panel  = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        main_layout.addWidget(right_panel, 1)
-
-        ip_layout  = QHBoxLayout()
-        lbl_ip     = QLabel("IP ESP32:")
-        self.edit_ip = QLineEdit(self.esp32_ip)
-        btn_set_ip   = QPushButton("Aplicar IP")
-        btn_set_ip.clicked.connect(self.set_ip)
-        ip_layout.addWidget(lbl_ip)
-        ip_layout.addWidget(self.edit_ip)
-        ip_layout.addWidget(btn_set_ip)
-        right_layout.addLayout(ip_layout)
-
-        serial_layout = QHBoxLayout()
-        lbl_com       = QLabel("Porta Serial:")
+        conn_group = QGroupBox("Conexão")
+        conn_layout = QGridLayout(conn_group)
         self.edit_com = QLineEdit(SERIAL_PORT)
-        btn_serial    = QPushButton("Conectar Serial")
+        btn_serial = QPushButton("Conectar")
         btn_serial.clicked.connect(self.connect_serial)
-        serial_layout.addWidget(lbl_com)
-        serial_layout.addWidget(self.edit_com)
-        serial_layout.addWidget(btn_serial)
-        right_layout.addLayout(serial_layout)
-
-        # ── Status de comunicação em tempo real ───────────────────── ← NOVO
-        status_widget = QWidget()
-        status_layout = QHBoxLayout(status_widget)
-        status_layout.setContentsMargins(0, 4, 0, 4)
+        conn_layout.addWidget(QLabel("Porta Serial:"), 0, 0)
+        conn_layout.addWidget(self.edit_com,            0, 1)
+        conn_layout.addWidget(btn_serial,               0, 2)
         self.lbl_conn    = QLabel("● Desconectado")
         self.lbl_latency = QLabel("Latência: ---")
         self.lbl_quality = QLabel("Qualidade: ---")
         for lbl in (self.lbl_conn, self.lbl_latency, self.lbl_quality):
-            lbl.setStyleSheet("color: gray; font-size: 11px")
-            status_layout.addWidget(lbl)
-        right_layout.addWidget(status_widget)
+            lbl.setStyleSheet("color: gray;")
+        conn_layout.addWidget(self.lbl_conn,    1, 0)
+        conn_layout.addWidget(self.lbl_latency, 1, 1)
+        conn_layout.addWidget(self.lbl_quality, 1, 2)
+        right_col.addWidget(conn_group)
 
-        btn_ctrl = QPushButton("Reconectar Controle Xbox")
-        btn_ctrl.clicked.connect(self.reconnect_controller)
-        right_layout.addWidget(btn_ctrl)
+        telem_group = QGroupBox("Telemetria de voo")
+        telem_layout = QGridLayout(telem_group)
+        self.lbl_alt   = QLabel("Altitude: --- m")
+        self.lbl_speed = QLabel("Velocidade: --- km/h")
+        self.lbl_fix   = QLabel("Fix: ---")
+        self.lbl_sv    = QLabel("Satélites: ---")
+        telem_layout.addWidget(self.lbl_alt,   0, 0)
+        telem_layout.addWidget(self.lbl_speed, 0, 1)
+        telem_layout.addWidget(self.lbl_fix,   1, 0)
+        telem_layout.addWidget(self.lbl_sv,    1, 1)
+        right_col.addWidget(telem_group)
 
+        traj_group = QGroupBox("Trajetória (metros, relativa ao home)")
+        traj_layout = QVBoxLayout(traj_group)
         self.fig, self.ax = plt.subplots(figsize=(5, 4))
-        self.ax.set_title("Trajetória do Aeromodelo")
-        self.ax.set_xlabel("Longitude")
-        self.ax.set_ylabel("Latitude")
-        self.ax.grid(True)
+        self.fig.patch.set_facecolor("#1b1e26")
+        self.ax.set_facecolor("#11141a")
+        self._style_axes()
         self.canvas = FigureCanvas(self.fig)
-        right_layout.addWidget(self.canvas, 4)
-
-        traj_controls = QWidget()
-        traj_layout   = QGridLayout(traj_controls)
-        right_layout.addWidget(traj_controls, 1)
-
-        lbl_lat       = QLabel("Latitude:")
-        self.edit_lat = QLineEdit()
-        lbl_lon       = QLabel("Longitude:")
-        self.edit_lon = QLineEdit()
-
-        btn_add        = QPushButton("Adicionar Ponto")
-        btn_abrir_maps = QPushButton("Abrir no Google Maps")
-        btn_salvar     = QPushButton("Salvar Trajetória")
-        btn_add.clicked.connect(self.add_point)
-        btn_abrir_maps.clicked.connect(self.abrir_no_google_maps)
+        traj_layout.addWidget(self.canvas, 5)
+        traj_btns = QHBoxLayout()
+        btn_salvar = QPushButton("Salvar imagem")
+        btn_limpar = QPushButton("Limpar trajetória")
         btn_salvar.clicked.connect(self.salvar_trajetoria)
+        btn_limpar.clicked.connect(self.limpar_trajetoria)
+        traj_btns.addWidget(btn_salvar)
+        traj_btns.addWidget(btn_limpar)
+        traj_layout.addLayout(traj_btns)
+        right_col.addWidget(traj_group, 4)
 
-        traj_layout.addWidget(lbl_lat,        0, 0)
-        traj_layout.addWidget(self.edit_lat,  0, 1)
-        traj_layout.addWidget(lbl_lon,        1, 0)
-        traj_layout.addWidget(self.edit_lon,  1, 1)
-        traj_layout.addWidget(btn_add,        2, 0, 1, 2)
-        traj_layout.addWidget(btn_abrir_maps, 3, 0, 1, 2)
-        traj_layout.addWidget(btn_salvar,     4, 0, 1, 2)
+        log_group = QGroupBox("Eventos")
+        log_layout = QVBoxLayout(log_group)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(90)
+        log_layout.addWidget(self.log_text)
+        right_col.addWidget(log_group)
 
-    # ── Helpers ──────────────────────────────────────────────────────
-
-    def set_ip(self):
-        new_ip = self.edit_ip.text().strip()
-        if new_ip:
-            self.esp32_ip = new_ip
-            self.close_sockets()
-            self.log(f"🔄 IP definido para {self.esp32_ip}. Tentando conectar...", "blue")
-
-    def _open_serial(self, port: str):
-        """Abre a serial SEM tocar em DTR/RTS — evita reset do ESP32."""
-        if self.ser and self.ser.is_open:
-            try:
-                self.ser.close()
-            except Exception:
-                pass
+        # ── Controller ──────────────────────────────────────────────
         try:
-            s = serial.Serial()
-            s.port     = port
-            s.baudrate = SERIAL_BAUD
-            s.timeout  = 0
-            s.dtr      = False   # ← não reseta o ESP32 ao abrir
-            s.rts      = False
-            s.open()
-            self.ser = s
-            self.log(f"✅ Serial aberta: {port}", "green")
+            self.controller = XboxController()
+            self.log("Controle Xbox detectado", "#7CFC9A")
         except Exception as e:
-            self.ser = None
-            self.log(f"❌ Serial não disponível ({e}) — ajuste a porta e clique Conectar Serial", "red")
+            self.controller = None
+            self.log(f"Erro ao inicializar controle: {e}", "#ff7a7a")
+
+        # ── Serial ──────────────────────────────────────────────────
+        self._open_serial(SERIAL_PORT)
+
+        # ── Thread de leitura serial ─────────────────────────────────
+        # Roda fora do Qt — coloca linhas brutas na fila, nunca toca na UI.
+        self._reader_thread = threading.Thread(
+            target=self._serial_reader, daemon=True, name="serial-reader"
+        )
+        self._reader_thread.start()
+
+        # ── Timers ──────────────────────────────────────────────────
+        # Controle (prioridade máxima — nunca bloqueado por I/O ou render)
+        self.control_timer = QTimer()
+        self.control_timer.timeout.connect(self.send_control)
+        self.control_timer.start(CONTROL_INTERVAL_MS)
+
+        # Drain da fila: apenas parsing + atualização de labels (< 1ms/tick)
+        self.queue_timer = QTimer()
+        self.queue_timer.timeout.connect(self._drain_queue)
+        self.queue_timer.start(QUEUE_DRAIN_MS)
+
+        # Render 3D + matplotlib a taxa controlada (sem competir com controle)
+        self.render_timer = QTimer()
+        self.render_timer.timeout.connect(self._throttled_render)
+        self.render_timer.start(int(RENDER_3D_INTERVAL * 1000))
+
+        self.quality_timer = QTimer()
+        self.quality_timer.timeout.connect(self.update_quality_labels)
+        self.quality_timer.start(QUALITY_INTERVAL_MS)
+
+    # ── Log ─────────────────────────────────────────────────────────
+    def log(self, msg: str, color: str = "#e6e6e6"):
+        self.log_text.append(f'<span style="color:{color}">{msg}</span>')
+
+    # ── Serial ──────────────────────────────────────────────────────
+    def _open_serial(self, port: str):
+        with self._ser_lock:
+            if self.ser and self.ser.is_open:
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+            try:
+                s = serial.Serial()
+                s.port     = port
+                s.baudrate = SERIAL_BAUD
+                s.timeout  = 0
+                s.dtr      = False
+                s.rts      = False
+                s.open()
+                self.ser = s
+                self.log(f"Serial aberta: {port}", "#7CFC9A")
+            except Exception as e:
+                self.ser = None
+                self.log(f"Serial não disponível ({e})", "#ff7a7a")
 
     def connect_serial(self):
         port = self.edit_com.text().strip()
         if port:
             self._open_serial(port)
 
-    def reconnect_controller(self):
-        """Re-enumera joysticks pygame sem reiniciar toda a lib."""
+    # ── Thread de leitura serial ─────────────────────────────────────
+    def _serial_reader(self):
+        """Roda em background. Única responsabilidade: bytes -> linhas -> fila.
+        Nunca acessa widgets Qt. Lock em torno de self.ser para segurança."""
+        buf = b""
+        while self._running:
+            with self._ser_lock:
+                ser = self.ser
+            if ser is None or not ser.is_open:
+                time.sleep(0.05)
+                continue
+            try:
+                n = ser.in_waiting
+                if n:
+                    buf += ser.read(n)
+                    lines, buf = _pop_lines(buf)
+                    for line in lines:
+                        self._telem_queue.put_nowait(line)
+            except Exception:
+                with self._ser_lock:
+                    self.ser = None
+            time.sleep(0.005)   # 200Hz de polling — headroom suficiente para 50Hz
+
+    # ── Drain da fila (thread principal, 10ms) ───────────────────────
+    def _drain_queue(self):
+        """Consome até 30 linhas por tick. Só faz parsing e atualiza
+        labels de texto — sem render 3D nem matplotlib."""
+        for _ in range(30):
+            try:
+                raw = self._telem_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._process_line(raw)
+
+    def _process_line(self, raw: bytes):
         try:
-            import pygame
-            pygame.joystick.quit()
-            pygame.joystick.init()
-            self.controller = XboxController()
-            self.log("✅ Controle Xbox reconectado", "green")
-        except Exception as e:
-            self.controller = None
-            self.log(f"❌ Controle não encontrado: {e}", "red")
+            parts = raw.decode(errors="ignore").split(",")
+            if len(parts) != 10:
+                return
+            roll  = float(parts[0])
+            pitch = -float(parts[1])
+            yaw   = -float(parts[2])
+            lon_d = int(parts[3])
+            lat_d = int(parts[4])
+            alt   = float(parts[5])
+            speed = int(parts[6])
+            fix   = int(parts[7])
+            sats  = int(parts[8])
+            rtt   = int(parts[9])
+        except (ValueError, IndexError):
+            return
 
-    def log(self, msg, color="black"):
-        self.log_text.append(f'<span style="color:{color}">{msg}</span>')
+        if not all(_is_finite(v) for v in (roll, pitch, yaw, alt)):
+            return
 
-    # ── Mapeamento de eixos ───────────────────────────────────────── ← NOVO
+        # Marca rotação pendente (render ocorre no timer separado)
+        self._pending_rotation = (roll, pitch, yaw)
 
-    @staticmethod
-    def map_throttle_to_pwm(axis: float) -> int:
-        """Left trigger → 1000–2000 us (ESC não aceita fora disso)."""
-        if abs(axis) < 0.08:
-            axis = 0.0
-        return int(1500 + max(-1.0, min(1.0, axis)) * 500)
+        # Labels são operações baratas — ok no drain
+        self.lbl_roll.setText(f"Roll: {roll:.1f} °")
+        self.lbl_pitch.setText(f"Pitch: {pitch:.1f} °")
+        self.lbl_yaw.setText(f"Yaw: {yaw:.1f} °")
+        fix_txt = {0: "sem fix", 2: "2D", 3: "3D"}.get(fix, str(fix))
+        self.lbl_alt.setText(f"Altitude: {alt:.1f} m")
+        self.lbl_speed.setText(f"Velocidade: {speed} km/h")
+        self.lbl_fix.setText(f"Fix: {fix_txt}")
+        self.lbl_sv.setText(f"Satélites: {sats}")
 
-    @staticmethod
-    def map_servo_to_pwm(axis: float) -> int:
-        """Joystick → 500–2500 us (range máximo para curso total dos servos)."""
-        if abs(axis) < 0.08:
-            axis = 0.0
-        return int(1500 + max(-1.0, min(1.0, axis)) * 1000)
+        self._latency_ms  = rtt
+        self._pkt_count  += 1
+        self._last_rx_t   = time.time()
 
-    # ── Qualidade de comunicação ──────────────────────────────────── ← NOVO
+        if fix >= 3:
+            self.trajectory.append((lon_d, lat_d))
+            self._plot_dirty = True
 
+    # ── Render throttled (50ms timer = máx 20Hz) ────────────────────
+    def _throttled_render(self):
+        now = time.time()
+
+        # 3D: aplica apenas a última rotação acumulada desde o tick anterior
+        if self._pending_rotation is not None and now - self._last_3d_t >= RENDER_3D_INTERVAL:
+            self._aplicar_rotacao(*self._pending_rotation)
+            self._pending_rotation = None
+            self._last_3d_t = now
+
+        # Matplotlib: redesenha só quando há dados novos e o intervalo passou
+        if self._plot_dirty and now - self._last_plot_t >= PLOT_INTERVAL:
+            self._update_plot()
+            self._plot_dirty = False
+            self._last_plot_t = now
+
+    # ── Qualidade ────────────────────────────────────────────────────
     def update_quality_labels(self):
-        """Atualiza os labels de status/latência/qualidade a cada 1s."""
-        pps = self._pkt_count   # pacotes recebidos no último segundo
-        self._pkt_count = 0     # reseta contador
-
-        connected = (self._last_gyro_t is not None and
-                     time.time() - self._last_gyro_t < 1.5)
-
+        pps = self._pkt_count
+        self._pkt_count = 0
+        connected = self._last_rx_t is not None and time.time() - self._last_rx_t < 1.5
         if connected:
-            q     = min(100, int(pps / 50 * 100))  # esperado: 50 pkt/s
-            color = "green" if q >= 70 else "orange" if q >= 30 else "red"
+            q = min(100, int(pps / 50 * 100))
+            color = "#7CFC9A" if q >= 70 else "#ffb86c" if q >= 30 else "#ff7a7a"
             self.lbl_conn.setText("● Conectado")
-            self.lbl_conn.setStyleSheet(f"color: {color}; font-size: 11px")
+            self.lbl_conn.setStyleSheet(f"color: {color};")
             self.lbl_quality.setText(f"Qualidade: {pps} pkt/s ({q}%)")
-            self.lbl_quality.setStyleSheet(f"color: {color}; font-size: 11px")
+            self.lbl_quality.setStyleSheet(f"color: {color};")
         else:
             self.lbl_conn.setText("● Desconectado")
-            self.lbl_conn.setStyleSheet("color: red; font-size: 11px")
+            self.lbl_conn.setStyleSheet("color: #ff7a7a;")
             self.lbl_quality.setText("Qualidade: ---")
-            self.lbl_quality.setStyleSheet("color: gray; font-size: 11px")
-
+            self.lbl_quality.setStyleSheet("color: gray;")
         if self._latency_ms is not None:
-            lat_color = ("green"  if self._latency_ms < 50  else
-                         "orange" if self._latency_ms < 200 else "red")
+            lat_color = ("#7CFC9A" if self._latency_ms < 50 else
+                         "#ffb86c" if self._latency_ms < 200 else "#ff7a7a")
             self.lbl_latency.setText(f"Latência: {self._latency_ms:.0f} ms")
-            self.lbl_latency.setStyleSheet(f"color: {lat_color}; font-size: 11px")
+            self.lbl_latency.setStyleSheet(f"color: {lat_color};")
 
-    def send_ping(self):
-        """Envia PING para o ESP32 medir latência via PONG."""
-        if self.gyro_sock:
-            try:
-                self._ping_sent_t = time.time()
-                self.gyro_sock.send(b"PING\n")
-            except (BlockingIOError, OSError):
-                self._ping_sent_t = None
-
-    # ── Conexões TCP ─────────────────────────────────────────────────
-
-    def try_connect(self):
-        if not self.gyro_sock:
-            try:
-                self.gyro_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.gyro_sock.settimeout(1)
-                self.gyro_sock.connect((self.esp32_ip, 8080))
-                self.gyro_sock.setblocking(False)
-                self.log("✅ Conectado ao socket de giroscópio (8080)", "green")
-            except Exception as e:
-                self.gyro_sock = None
-                self.log(f"❌ Erro ao conectar giroscópio: {e}", "red")
-
-        if not self.log_sock:
-            try:
-                self.log_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.log_sock.settimeout(1)
-                self.log_sock.connect((self.esp32_ip, 9090))
-                self.log_sock.setblocking(False)
-                self.log("✅ Conectado ao socket de logs (9090)", "green")
-            except Exception as e:
-                self.log_sock = None
-                self.log(f"❌ Erro ao conectar logs: {e}", "red")
-
-    def close_sockets(self):
-        for sock in [self.gyro_sock, self.log_sock]:
-            if sock:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
-        self.gyro_sock = None
-        self.log_sock  = None
-
-    def _pop_lines(self, buf):
-        lines = []
-        if not buf:
-            return lines, buf
-        parts    = buf.split(b'\n')
-        complete = parts[:-1]
-        buf      = parts[-1]
-        for raw in complete:
-            line = raw.replace(b'\r', b'').strip()
-            if line:
-                lines.append(line)
-        return lines, buf
-
-    # ── Leitura TCP ──────────────────────────────────────────────────
-
-    def read_gyro(self):
-        if not self.gyro_sock:
-            return
-        try:
-            data = self.gyro_sock.recv(1024)
-            if not data:
-                return
-            self.gyro_buf += data
-            lines, self.gyro_buf = self._pop_lines(self.gyro_buf)
-            for raw in lines:
-                try:
-                    line = raw.decode(errors="ignore")
-
-                    # ── PONG: mede latência ──────────────────────── ← NOVO
-                    if line == "PONG":
-                        if self._ping_sent_t is not None:
-                            self._latency_ms  = (time.time() - self._ping_sent_t) * 1000
-                            self._ping_sent_t = None
-                        continue
-
-                    # ── IMU normal: "roll,pitch,yaw" ──────────────
-                    parts = line.split(",")
-                    if len(parts) != 3:
-                        continue
-                    roll, pitch, yaw = map(float, parts)
-                    if not (_is_finite(roll) and _is_finite(pitch) and _is_finite(yaw)):
-                        continue
-                    self.spin_roll.setValue(roll)
-                    self.spin_pitch.setValue(pitch)
-                    self.spin_yaw.setValue(yaw)
-                    self.aplicar_rotacao()
-                    self._pkt_count   += 1          # ← NOVO: conta pacotes
-                    self._last_gyro_t  = time.time() # ← NOVO: timestamp
-                except Exception as e:
-                    self.log(f"⚠️ Erro processando gyro: {e}", "orange")
-        except BlockingIOError:
-            pass
-        except Exception as e:
-            self.log(f"❌ Conexão perdida giroscópio: {e}", "red")
-            self.gyro_sock = None
-
-    def read_logs(self):
-        if not self.log_sock:
-            return
-        try:
-            data = self.log_sock.recv(1024)
-            if not data:
-                return
-            self.log_buf += data
-            lines, self.log_buf = self._pop_lines(self.log_buf)
-            for raw in lines:
-                try:
-                    self.log(raw.decode(errors="ignore"), "black")
-                except Exception:
-                    pass
-        except BlockingIOError:
-            pass
-        except Exception as e:
-            self.log(f"❌ Conexão perdida logs: {e}", "red")
-            self.log_sock = None
-
-    # ── Envio de controle via Serial → transmissor ESP32 ─────────────
-    #
-    # Protocolo: "throttle,aileron,rudder,elevator\n"  ← ALTERADO
-    #   throttle  : 1000–2000 µs  (left trigger)
-    #   aileron   : 500–2500  µs  (LeftX)
-    #   rudder    : 500–2500  µs  (RightX)
-    #   elevator  : 500–2500  µs  (RightY)
-
+    # ── Envio de controle ─────────────────────────────────────────────
     def send_control(self):
-        if not self.ser or not self.controller:
+        """Timer de 20ms. Nunca bloqueado por I/O ou render — a leitura
+        serial está em thread separada e os renders têm seus próprios timers."""
+        if not self.controller:
+            return
+        with self._ser_lock:
+            ser = self.ser
+        if ser is None or not ser.is_open:
             return
         try:
-            throttle = self.map_throttle_to_pwm(-self.controller.getLeftTrigger())
-            aileron  = self.map_servo_to_pwm(self.controller.getLeftX())
-            rudder   = self.map_servo_to_pwm(self.controller.getRightX())
-            elevator = self.map_servo_to_pwm(self.controller.getRightY())
-            self.ser.write(f"{throttle},{aileron},{rudder},{elevator}\n".encode())
+            throttle = map_trigger(-self.controller.getRightTrigger())
+            aileron  = map_axis_centered(self.controller.getLeftX())
+            rudder   = map_axis_centered(self.controller.getRightX())
+            elevator = map_axis_centered(self.controller.getRightY())
+            ser.write(f"{throttle},{aileron},{rudder},{elevator}\n".encode())
+            self.bar_throttle.setValue(throttle)
+            self.bar_aileron.setValue(aileron)
+            self.bar_rudder.setValue(rudder)
+            self.bar_elevator.setValue(elevator)
         except Exception as e:
-            self.log(f"⚠️ Erro enviando controle serial: {e}", "orange")
+            self.log(f"Erro enviando controle: {e}", "#ff7a7a")
+            with self._ser_lock:
+                self.ser = None
 
-    # ── Rotação 3D ───────────────────────────────────────────────────
-
-    def aplicar_rotacao(self):
-        yaw   = math.radians(self.spin_yaw.value())
-        pitch = math.radians(self.spin_pitch.value())
-        roll  = math.radians(self.spin_roll.value())
-
+    # ── Render 3D ────────────────────────────────────────────────────
+    def _aplicar_rotacao(self, roll_deg: float, pitch_deg: float, yaw_deg: float):
+        yaw   = math.radians(yaw_deg)
+        pitch = math.radians(pitch_deg)
+        roll  = math.radians(roll_deg)
         Rx = np.array([[1, 0,              0              ],
                        [0, math.cos(roll), -math.sin(roll)],
                        [0, math.sin(roll),  math.cos(roll)]])
-
         Ry = np.array([[ math.cos(pitch), 0, math.sin(pitch)],
                        [ 0,               1, 0              ],
                        [-math.sin(pitch), 0, math.cos(pitch)]])
-
         Rz = np.array([[math.cos(yaw), -math.sin(yaw), 0],
                        [math.sin(yaw),  math.cos(yaw), 0],
                        [0,              0,             1]])
-
-        Rmat = Rz @ Ry @ Rx
-        pts  = modelo_original.points.copy() - centroide
-        modelo.points = (pts @ Rmat.T) + centroide
-
+        pts = modelo_original.points.copy() - centroide
+        modelo.points = (pts @ (Rz @ Ry @ Rx).T) + centroide
         try:
             self.plotter.update()
             self.plotter.render()
         except Exception:
             pass
 
-    # ── Trajetória ───────────────────────────────────────────────────
-
-    def add_point(self):
-        try:
-            lat = float(self.edit_lat.text())
-            lon = float(self.edit_lon.text())
-        except ValueError:
-            QMessageBox.warning(self, "Erro", "Valores inválidos!")
-            return
-        if not self.trajectory or (lat, lon) != self.trajectory[-1]:
-            self.trajectory.append((lat, lon))
-            self.update_plot()
-
-    def update_plot(self):
+    # ── Trajetória ────────────────────────────────────────────────────
+    def _style_axes(self):
         self.ax.clear()
-        self.ax.set_title("Trajetória do Aeromodelo")
-        self.ax.set_xlabel("Longitude")
-        self.ax.set_ylabel("Latitude")
-        self.ax.grid(True)
-        if self.trajectory:
-            lons, lats = zip(*self.trajectory)
-            self.ax.plot(lons, lats, 'b-', linewidth=2)
-        self.canvas.draw()
+        self.ax.set_facecolor("#11141a")
+        self.ax.set_title("Trajetória", color="#e6e6e6")
+        self.ax.set_xlabel("Leste (m)", color="#e6e6e6")
+        self.ax.set_ylabel("Norte (m)", color="#e6e6e6")
+        self.ax.tick_params(colors="#9aa3b5")
+        self.ax.grid(True, color="#2a3142")
 
-    def abrir_no_google_maps(self):
+    def _update_plot(self):
+        self._style_axes()
         if self.trajectory:
-            lat, lon = self.trajectory[-1]
-            webbrowser.open(f"https://www.google.com/maps?q={lat},{lon}")
+            east, north = zip(*self.trajectory)
+            self.ax.plot(east, north, color="#4f8cff", linewidth=2)
+            self.ax.plot(east[-1], north[-1], "o", color="#7CFC9A", markersize=6)
+        self.canvas.draw_idle()   # agenda o repaint sem bloquear o event loop
+
+    def limpar_trajetoria(self):
+        self.trajectory.clear()
+        self._plot_dirty = True
 
     def salvar_trajetoria(self):
-        self.fig.savefig("trajetoria.png")
-        QMessageBox.information(self, "Salvo", "Trajetória salva com sucesso!")
+        self.fig.savefig("trajetoria.png", facecolor=self.fig.get_facecolor())
+        self.log("Trajetória salva em trajetoria.png", "#7CFC9A")
+
+    # ── Encerramento ──────────────────────────────────────────────────
+    def closeEvent(self, event):
+        self._running = False          # sinaliza thread para sair
+        self._reader_thread.join(timeout=1.0)
+        super().closeEvent(event)
 
 
 if __name__ == '__main__':

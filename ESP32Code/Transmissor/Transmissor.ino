@@ -11,21 +11,36 @@ constexpr uint8_t MOSI_PIN = 23;
 RF24 radio(CE_PIN, CSN_PIN);
 const uint8_t address[6] = "NODE1";
 
-struct Packet {
-    volatile uint16_t throttleUs = 1000;
-    uint16_t aileronUs  = 1500;
-    uint16_t rudderUs   = 1500;
-    uint16_t elevatorUs = 1500;
-};
+// ── Mesmos formatos de pacote do receptor ─────────────────────────────
+struct ControlPacket {
+    uint8_t  throttle;
+    uint8_t  aileron;
+    uint8_t  rudder;
+    uint8_t  elevator;
+    uint16_t timestamp;
+} __attribute__((packed));
 
-volatile uint16_t throttleUs  = 1000;
-volatile uint16_t aileronUs   = 1500;
-volatile uint16_t rudderUs    = 1500;
-volatile uint16_t elevatorUs  = 1500;
+struct TelemetryPacket {
+    uint16_t timestamp;
+    int16_t  roll;
+    int16_t  pitch;
+    int16_t  yaw;
+    int16_t  latDeltaM;
+    int16_t  lonDeltaM;
+    int16_t  altDm;
+    uint8_t  speedKmh;
+    uint8_t  fixType;
+    uint8_t  numSV;
+} __attribute__((packed));
+
+// ── Controle recebido do PC (0-100 por canal) ─────────────────────────
+volatile uint8_t ctrlThrottle = 0;
+volatile uint8_t ctrlAileron  = 50;
+volatile uint8_t ctrlRudder   = 50;
+volatile uint8_t ctrlElevator = 50;
 
 void setup() {
     Serial.begin(115200);
-    delay(1000);
 
     pinMode(CE_PIN,  OUTPUT); digitalWrite(CE_PIN,  LOW);
     pinMode(CSN_PIN, OUTPUT); digitalWrite(CSN_PIN, HIGH);
@@ -33,38 +48,36 @@ void setup() {
     SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN);
 
     if (!radio.begin(&SPI)) {
-        Serial.println("[ERRO] RF24 nao inicializou");
-        while (true) delay(1000);
+        while (true) delay(1000); // rádio não inicializou
     }
 
-    radio.setPALevel(RF24_PA_LOW);
-    radio.setDataRate(RF24_250KBPS);
+    radio.setPALevel(RF24_PA_MAX);   // potência máxima
+    radio.setDataRate(RF24_250KBPS); // mesmo data rate do receptor
     radio.setChannel(76);
+    radio.enableDynamicPayloads();   // obrigatório para ACK payload
+    radio.enableAckPayload();
     radio.openWritingPipe(address);
     radio.stopListening();
-
-    Serial.println("[OK] RF24 pronto — transmitindo");
 }
 
+// ── Leitura do controle vindo do PC: "throttle,aileron,rudder,elevator\n" (0-100) ──
 static String lineBuffer;
 
-void readSerial() {
+void readSerialControl() {
     while (Serial.available()) {
         char c = (char)Serial.read();
         if (c == '\n' || c == '\r') {
             lineBuffer.trim();
             if (lineBuffer.length() > 0) {
-                // Formato CSV esperado: "throttle,aileron,rudder,elevator"
                 int v0, v1, v2, v3;
                 if (sscanf(lineBuffer.c_str(), "%d,%d,%d,%d", &v0, &v1, &v2, &v3) == 4) {
-                    if (v0 >= 1000 && v0 <= 2000) throttleUs  = v0;
-                    if (v1 >= 500 && v1 <= 2500) aileronUs   = v1;
-                    if (v2 >= 500 && v2 <= 2500) rudderUs    = v2;
-                    if (v3 >= 500 && v3 <= 2500) elevatorUs  = v3;
-                    Serial.printf("[PC] thr=%d ail=%d rud=%d ele=%d\n", v0, v1, v2, v3);
+                    ctrlThrottle = (uint8_t)constrain(v0, 0, 100);
+                    ctrlAileron  = (uint8_t)constrain(v1, 0, 100);
+                    ctrlRudder   = (uint8_t)constrain(v2, 0, 100);
+                    ctrlElevator = (uint8_t)constrain(v3, 0, 100);
                 }
-                lineBuffer = "";
             }
+            lineBuffer = "";
         } else {
             lineBuffer += c;
         }
@@ -74,13 +87,37 @@ void readSerial() {
 static unsigned long lastTx = 0;
 
 void loop() {
-    readSerial();  // drena TUDO do buffer a cada loop
+    readSerialControl(); // drena tudo do buffer a cada loop
 
-    if (millis() - lastTx >= 20) {  // 50 Hz = 20 ms
+    if (millis() - lastTx >= 20) { // 50Hz — igual ao timer de controle do dashboard
         lastTx = millis();
-        Packet pkt{throttleUs, aileronUs, rudderUs, elevatorUs};
+
+        ControlPacket pkt;
+        pkt.throttle  = ctrlThrottle;
+        pkt.aileron   = ctrlAileron;
+        pkt.rudder    = ctrlRudder;
+        pkt.elevator  = ctrlElevator;
+        pkt.timestamp = (uint16_t)(millis() & 0xFFFF);
+
         bool ok = radio.write(&pkt, sizeof(pkt));
-        if (!ok) Serial.println("[TX] sem ACK");
-        // sem printf de sucesso aqui — causa o buffer overflow
+
+        if (ok && radio.isAckPayloadAvailable()) {
+            TelemetryPacket tp;
+            radio.read(&tp, sizeof(tp));
+
+            uint16_t nowMs = (uint16_t)(millis() & 0xFFFF);
+            uint16_t rtt   = nowMs - tp.timestamp; // wraparound natural em uint16
+
+            // ── Tradução de volta para valores reais — só acontece aqui ──
+            float roll  = tp.roll  / 100.0f;
+            float pitch = tp.pitch / 100.0f;
+            float yaw   = tp.yaw   / 100.0f;
+            float altM  = tp.altDm / 10.0f;
+
+            Serial.printf("%.2f,%.2f,%.2f,%d,%d,%.1f,%u,%u,%u,%u\n",
+                          roll, pitch, yaw,
+                          tp.latDeltaM, tp.lonDeltaM, altM,
+                          tp.speedKmh, tp.fixType, tp.numSV, rtt);
+        }
     }
 }
