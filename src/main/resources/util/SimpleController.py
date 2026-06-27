@@ -8,8 +8,10 @@ def map_motor_axis_to_pwm(axis: float) -> int:
         axis = 0.0
 
     axis = max(-1.0, min(1.0, axis))
-
-    return int(1500 + axis * 500)
+    value = int(1500 + axis * 500)
+    if value >1700:
+        value = 1700 
+    return value
 
 def map_servo_axis_to_pwm(axis: float) -> int:
     # Deadzone ao redor do centro — serve para triggers e joysticks
@@ -28,16 +30,16 @@ last_packet = None
 
 while True:
     # Throttle: Left Trigger (lógica original mantida)
-    throttle = map_motor_axis_to_pwm(-controller.getLeftTrigger())
+    throttle = map_motor_axis_to_pwm(-controller.getRightTrigger())
 
     # Aileron:   LeftX  (-1.0 → 1.0) → 1000–2000 us
     aileron  = map_servo_axis_to_pwm(controller.getLeftX())   # ajuste o nome ao seu XboxController
 
     # Leme:      RightX (-1.0 → 1.0) → 1000–2000 us
-    rudder   = map_servo_axis_to_pwm(controller.getRightX())
+    rudder   = map_servo_axis_to_pwm(controller.getRightY())
 
     # Profundor: RightY (-1.0 → 1.0) → 1000–2000 us
-    elevator = map_servo_axis_to_pwm(controller.getRightY())
+    elevator = map_servo_axis_to_pwm(0)
 
     packet = (throttle, aileron, rudder, elevator)
 
