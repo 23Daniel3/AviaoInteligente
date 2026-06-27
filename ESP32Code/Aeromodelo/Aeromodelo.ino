@@ -4,23 +4,18 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include <Wire.h>
-#include <SparkFun_BNO080_Arduino_Library.h>  
 
 // ── Pinos ────────────────────────────────────────────────────────────
-constexpr gpio_num_t ESC_GPIO            = GPIO_NUM_18;
-constexpr gpio_num_t SERVO_AILERON_GPIO  = GPIO_NUM_35;  // Aileron   ← LeftX
-constexpr gpio_num_t SERVO_RUDDER_GPIO   = GPIO_NUM_36;  // Leme      ← RightX
-constexpr gpio_num_t SERVO_ELEVATOR_GPIO = GPIO_NUM_37;  // Profundor ← RightY
+constexpr gpio_num_t ESC_GPIO            = GPIO_NUM_38;
+constexpr gpio_num_t SERVO_AILERON_GPIO  = GPIO_NUM_1;  // Aileron   ← LeftX
+constexpr gpio_num_t SERVO_RUDDER_GPIO   = GPIO_NUM_2;  // Leme      ← RightX
+constexpr gpio_num_t SERVO_ELEVATOR_GPIO = GPIO_NUM_42;  // Profundor ← RightY
 
-// BNO080/085 I2C — GPIO livres no ESP32-S3 N16R8
-constexpr uint8_t BNO_SDA = 8;
-constexpr uint8_t BNO_SCL = 9;
-
-constexpr uint8_t CE_PIN   = 4;
-constexpr uint8_t CSN_PIN  = 5;
-constexpr uint8_t SCK_PIN  = 12;
-constexpr uint8_t MISO_PIN = 13;
+constexpr uint8_t CE_PIN   = 46;
+constexpr uint8_t CSN_PIN  = 9;
+constexpr uint8_t SCK_PIN  = 10;
 constexpr uint8_t MOSI_PIN = 11;
+constexpr uint8_t MISO_PIN = 12;
 
 // ── Limites PWM ───────────────────────────────────────────────────────
 constexpr int PWM_MIN       = 1000;
@@ -41,10 +36,6 @@ struct ServoTimer {
 };
 
 static ServoTimer servos[3]; // [0]=aileron  [1]=leme  [2]=profundor
-
-// ── BNO080 — biblioteca antiga, API direta sem quaternions ───────────
-BNO080 myIMU;
-bool   bnoOk = false;
 
 // Euler em graus — escritos no loop() (Core 1), lidos futuramente pelo WiFiTask
 volatile float imu_roll  = 0.0f;
@@ -139,32 +130,6 @@ void servoWrite(ServoTimer& s, int us) {
     s.pulseUs = constrain(us, PWM_MIN_SERVO, PWM_MAX_SERVO);
 }
 
-// ════════════════════════════════════════════════════════
-// IMU — inicializa BNO080 via I2C
-//
-// Notas:
-// • Wire.begin(SDA, SCL) ANTES do myIMU.begin() — obrigatório no ESP32
-// • begin() com intPin=255 = sem pino de interrupção (polling puro)
-// • enableRotationVector(20) = 50 Hz, sincronizado com o resto do sistema
-// • Leitura fica no loop() (Core 1) — seguro pois rádio usa SPI no Core 0
-// ════════════════════════════════════════════════════════
-void imuSetup() {
-    Wire.begin(BNO_SDA, BNO_SCL);
-    Wire.setClock(400000);  // 400kHz — reduz latência de leitura
-
-    // intPin=255 → sem pino de interrupção (polling via dataAvailable)
-    if (!myIMU.begin(BNO080_DEFAULT_ADDRESS, Wire, 255)) {
-        Serial.println("2a - BNO080 ERRO (SDA=8 SCL=9 — verifique fiação e endereço 0x4B)");
-        bnoOk = false;
-        return;
-    }
-
-    // 20ms entre amostras = 50 Hz, igual ao período do ESC e servos
-    myIMU.enableRotationVector(20);
-    bnoOk = true;
-    Serial.println("2a - BNO080 OK (50Hz rotation vector)");
-}
-
 // ── Valores globais recebidos via rádio ───────────────────
 volatile int motorValue   = 0;
 volatile int aileronValue = SERVO_MID;
@@ -191,7 +156,7 @@ void radioTask(void* param) {
     if (!radio.begin(&spi)) {
         Serial.println("[CORE0][ERRO] RF24 falhou");
     } else {
-        radio.setPALevel(RF24_PA_LOW);
+        radio.setPALevel(RF24_PA_MAX);
         radio.setDataRate(RF24_250KBPS);
         radio.setChannel(76);
         radio.openReadingPipe(1, address);
@@ -227,9 +192,6 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println("1 - Serial OK");
-
-    // BNO080 — inicializa antes do ESC (sem conflito, usa I2C não SPI)
-    imuSetup();
 
     // ESC — Sem LEDC, sem Servo.h, sem alocação de timer — zero conflito
     escSetup();
@@ -281,23 +243,4 @@ void loop() {
     servoWrite(servos[0], aileronValue);  // Aileron   ← LeftX
     servoWrite(servos[1], rudderValue);   // Leme      ← RightX
     servoWrite(servos[2], elevValue);     // Profundor ← RightY
-
-    // ── IMU — leitura não-bloqueante a 50Hz ──────────────────────
-    if (bnoOk) {
-        // hasReset(): sensor resetou (ex: falha de alimentação)
-        // → reativa o relatório de rotation vector
-        if (myIMU.hasReset()) {
-            myIMU.enableRotationVector(20);
-            Serial.println("[IMU] Reset detectado — relatório reativado");
-        }
-
-        if (myIMU.dataAvailable()) {
-            // getRoll/Pitch/Yaw retornam em radianos → converter para graus
-            imu_roll  = myIMU.getRoll()  * 180.0f / PI;
-            imu_pitch = myIMU.getPitch() * 180.0f / PI;
-            imu_yaw   = myIMU.getYaw()   * 180.0f / PI;
-
-            // Formato "roll,pitch,yaw\n" — mesma estrutura esperada pela dashboard
-            Serial.printf("%f,%f,%f\n", imu_roll, imu_pitch, imu_yaw);        }
-    }
 }
